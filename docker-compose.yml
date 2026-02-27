@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FEISHU_APP_ID=${FEISHU_APP_ID}
+      - FEISHU_APP_SECRET=${FEISHU_APP_SECRET}
+      - FEISHU_VERIFICATION_TOKEN=${FEISHU_VERIFICATION_TOKEN}
+      - FEISHU_ENCRYPT_KEY=${FEISHU_ENCRYPT_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - DATABASE_URL=sqlite:////app/data/chagent.db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
