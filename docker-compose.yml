@@ -5,7 +5,9 @@ services:
     build: ./backend
     restart: unless-stopped
     volumes:
-      - ./data:/app/data
+      - ./data/db:/app/data          # SQLite 数据库
+      - ./data/skills:/app/skills    # Skill 文件（可 SSH 直接编辑，热生效）
+      - ./data/profiles:/app/profiles # 学生画像（运行时生成）
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - FEISHU_APP_ID=${FEISHU_APP_ID}
@@ -21,6 +23,6 @@ services:
     build: ./frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "80:80"
     depends_on:
       - backend

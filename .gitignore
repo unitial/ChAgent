@@ -13,6 +13,9 @@ venv/
 # Runtime data (generated at runtime, not source)
 backend/profiles/*/
 
+# Docker runtime data
+data/
+
 # Database
 *.db
 *.sqlite
