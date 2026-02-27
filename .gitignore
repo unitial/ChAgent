@@ -30,6 +30,3 @@ Thumbs.db
 # PDF source materials
 *.pdf
 *.pdf:Zone.Identifier
-
-# Simulation script (dev only)
-simulate_students.py
