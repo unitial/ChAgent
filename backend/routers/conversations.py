@@ -39,7 +39,7 @@ def list_conversations(
     if date_to:
         query = query.filter(Conversation.created_at <= date_to)
 
-    rows = query.order_by(Conversation.created_at.desc()).limit(limit).all()
+    rows = query.order_by(Conversation.created_at.asc(), Conversation.id.asc()).limit(limit).all()
 
     return [
         ConversationOut(
