@@ -13,6 +13,8 @@ class Session(Base):
     ended_at = Column(DateTime(timezone=True), nullable=True)
     summarized = Column(Boolean, default=False)
     mode = Column(String(32), nullable=True)  # None = normal, "challenge" = challenge mode
+    doc_path = Column(Text, nullable=True)           # path to uploaded document file
+    doc_media_type = Column(String(64), nullable=True)  # e.g. "application/pdf" or "text/plain"
 
     student = relationship("Student", back_populates="sessions")
     conversations = relationship("Conversation", back_populates="session", cascade="all, delete-orphan")

@@ -154,8 +154,19 @@ export interface StudentHistoryMessage {
 export const studentLogin = (name: string) =>
   studentApi.post<StudentLoginResponse>('/student/login', { name })
 
+export const studentNewSession = () =>
+  studentApi.post<{ session_id: number }>('/student/session/new')
+
 export const studentChat = (message: string, session_id?: number) =>
   studentApi.post<StudentChatResponse>('/student/chat', { message, session_id })
+
+export const studentChatWithFile = (message: string, file: File, session_id?: number) => {
+  const form = new FormData()
+  form.append('message', message)
+  form.append('file', file)
+  if (session_id != null) form.append('session_id', String(session_id))
+  return studentApi.post<StudentChatResponse>('/student/chat/upload', form)
+}
 
 export const studentHistory = (session_id?: number) =>
   studentApi.get<StudentHistoryMessage[]>('/student/history', { params: session_id != null ? { session_id } : undefined })

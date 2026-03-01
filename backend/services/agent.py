@@ -1,3 +1,5 @@
+import base64
+from pathlib import Path
 from sqlalchemy.orm import Session as DBSession
 from models.student import Student
 from models.conversation import Session as ConvSession, Conversation
@@ -51,9 +53,9 @@ def _build_profile_context(student: Student) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(db: DBSession, student: Student, session: ConvSession = None) -> str:
+def build_system_prompt(db: DBSession, student: Student, session: ConvSession = None, messages: list[dict] | None = None) -> str:
     parts = [BASE_SYSTEM_PROMPT]
-    skills_block = get_enabled_skills_prompt()
+    skills_block = get_enabled_skills_prompt(messages)
     if skills_block:
         parts.append(skills_block)
     if session and getattr(session, "mode", None) == "challenge":
@@ -76,10 +78,25 @@ def get_recent_history(db: DBSession, session: ConvSession, limit: int = 20) -> 
     return [{"role": c.role, "content": c.content} for c in conversations]
 
 
-def chat(db: DBSession, student: Student, session: ConvSession, user_message: str) -> tuple[str, int, int, str]:
+def _load_session_document(session: ConvSession) -> dict | None:
+    """Load the document attached to a session, if any."""
+    if not session.doc_path or not session.doc_media_type:
+        return None
+    doc_file = Path(session.doc_path)
+    if not doc_file.exists():
+        return None
+    return {
+        "media_type": session.doc_media_type,
+        "data": base64.b64encode(doc_file.read_bytes()).decode(),
+    }
+
+
+def chat(db: DBSession, student: Student, session: ConvSession, user_message: str, document: dict | None = None) -> tuple[str, int, int, str]:
     """Send a message to the configured LLM. Returns (reply, input_tokens, output_tokens, system_prompt)."""
-    system_prompt = build_system_prompt(db, student, session)
     history = get_recent_history(db, session)
     messages = history + [{"role": "user", "content": user_message}]
-    text, input_tokens, output_tokens = llm_chat(db, system_prompt, messages)
+    # Pass full message context so skill selection can match relevant knowledge points
+    system_prompt = build_system_prompt(db, student, session, messages)
+    doc = document if document is not None else _load_session_document(session)
+    text, input_tokens, output_tokens = llm_chat(db, system_prompt, messages, document=doc)
     return text, input_tokens, output_tokens, system_prompt

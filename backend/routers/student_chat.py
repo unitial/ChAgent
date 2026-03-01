@@ -1,7 +1,11 @@
+import base64
+import uuid
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status, Form, File, UploadFile
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -22,6 +26,17 @@ router = APIRouter(prefix="/api/student", tags=["student"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/student/login")
 
+# Directory for uploaded session documents
+SESSION_DOCS_DIR = Path(__file__).parent.parent / "session_docs"
+SESSION_DOCS_DIR.mkdir(exist_ok=True)
+
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint",
+}
+ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt"}
+
 
 # --- Request/Response models ---
 
@@ -31,7 +46,7 @@ class LoginRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    session_id: Optional[int] = None  # if set, use this specific session (e.g. challenge)
+    session_id: Optional[int] = None
 
 
 class ChatResponse(BaseModel):
@@ -39,6 +54,7 @@ class ChatResponse(BaseModel):
     session_id: int
     session_mode: Optional[str] = None
     system_prompt: str
+    doc_filename: Optional[str] = None
 
 
 class HistoryMessage(BaseModel):
@@ -154,7 +170,73 @@ async def trigger_session_summary(student_id: int) -> None:
         db.close()
 
 
+# --- Document helpers ---
+
+def _extract_pptx_text(content: bytes) -> str:
+    """Extract slide text (titles, body, notes) from a PPTX file."""
+    from pptx import Presentation  # type: ignore
+
+    prs = Presentation(BytesIO(content))
+    lines: list[str] = []
+    for i, slide in enumerate(prs.slides, 1):
+        lines.append(f"[幻灯片 {i}]")
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        lines.append(text)
+        # Include speaker notes if present
+        if slide.has_notes_slide:
+            notes_tf = slide.notes_slide.notes_text_frame
+            notes_text = notes_tf.text.strip() if notes_tf else ""
+            if notes_text:
+                lines.append(f"  [备注] {notes_text}")
+    return "\n".join(lines)
+
+
+def _save_document(file_bytes: bytes, original_filename: str, content_type: str) -> tuple[Path, str]:
+    """
+    Save an uploaded file to SESSION_DOCS_DIR.
+    Returns (saved_path, media_type).
+    PPTX files are converted to plain-text for LLM consumption.
+    """
+    suffix = Path(original_filename).suffix.lower()
+
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型：{suffix}。请上传 PDF 或 PPTX 文件。")
+
+    unique_stem = uuid.uuid4().hex
+
+    if suffix == ".pdf":
+        saved_path = SESSION_DOCS_DIR / f"{unique_stem}.pdf"
+        saved_path.write_bytes(file_bytes)
+        return saved_path, "application/pdf"
+    else:
+        # PPTX / PPT — extract text and store as UTF-8 txt
+        try:
+            text = _extract_pptx_text(file_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"无法解析 PPTX 文件：{e}")
+        saved_path = SESSION_DOCS_DIR / f"{unique_stem}.txt"
+        saved_path.write_text(text, encoding="utf-8")
+        return saved_path, "text/plain"
+
+
 # --- Routes ---
+
+@router.post("/session/new")
+def new_session(
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """Explicitly start a fresh conversation session."""
+    session = ConvSession(student_id=student.id, mode=None)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return {"session_id": session.id}
+
 
 @router.post("/login")
 def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
@@ -208,7 +290,86 @@ async def student_chat(
 
     background_tasks.add_task(trigger_session_summary, student.id)
 
-    return {"reply": reply, "session_id": session.id, "session_mode": session.mode, "system_prompt": system_prompt}
+    doc_filename = None
+    if session.doc_path:
+        # Return the original media type hint as a simple label
+        doc_filename = Path(session.doc_path).name
+
+    return {"reply": reply, "session_id": session.id, "session_mode": session.mode, "system_prompt": system_prompt, "doc_filename": doc_filename}
+
+
+@router.post("/chat/upload", response_model=ChatResponse)
+async def student_chat_upload(
+    background_tasks: BackgroundTasks,
+    message: str = Form(...),
+    file: UploadFile = File(...),
+    session_id: Optional[int] = Form(None),
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """Send a message with a document (PDF or PPTX). The document is attached to the session
+    and re-sent to the LLM on every subsequent turn in the same session."""
+    text = message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > 20 * 1024 * 1024:  # 20 MB limit
+        raise HTTPException(status_code=413, detail="文件过大，最大支持 20 MB。")
+
+    saved_path, media_type = _save_document(file_bytes, file.filename or "upload", file.content_type or "")
+
+    # Resolve / create session
+    if session_id is not None:
+        session = db.query(ConvSession).filter(
+            ConvSession.id == session_id,
+            ConvSession.student_id == student.id,
+        ).first()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        session = get_or_create_session(db, student)
+
+    # If this session already had a different document, delete the old file
+    if session.doc_path and session.doc_path != str(saved_path):
+        old = Path(session.doc_path)
+        if old.exists():
+            old.unlink(missing_ok=True)
+
+    # Attach document to session
+    session.doc_path = str(saved_path)
+    session.doc_media_type = media_type
+    db.commit()
+
+    check_daily_limit(db, student)
+
+    # Build the document dict to pass for this first call
+    document = {
+        "media_type": media_type,
+        "data": base64.b64encode(saved_path.read_bytes()).decode(),
+    }
+    reply, input_tokens, output_tokens, system_prompt = agent_service.chat(
+        db, student, session, text, document=document
+    )
+
+    db.add(Conversation(student_id=student.id, session_id=session.id, role="user", content=text))
+    db.add(Conversation(
+        student_id=student.id, session_id=session.id,
+        role="assistant", content=reply,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        system_prompt=system_prompt,
+    ))
+    db.commit()
+
+    background_tasks.add_task(trigger_session_summary, student.id)
+
+    return {
+        "reply": reply,
+        "session_id": session.id,
+        "session_mode": session.mode,
+        "system_prompt": system_prompt,
+        "doc_filename": file.filename,
+    }
 
 
 @router.get("/history", response_model=list[HistoryMessage])

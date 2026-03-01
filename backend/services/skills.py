@@ -139,6 +139,20 @@ def delete_skill(slug: str) -> bool:
     return True
 
 
+def _extract_keywords(skill: dict) -> list[str]:
+    """Extract matchable substrings from skill name and description."""
+    text = skill["name"] + " " + skill["description"]
+    # Split on common delimiters including Chinese connectors
+    parts = re.split(r'[，,、；;/（()）\s与和或：:·]+', text)
+    return [p.strip() for p in parts if len(p.strip()) >= 2]
+
+
+def _skill_matches(skill: dict, conv_text: str) -> bool:
+    """Return True if any keyword from the skill appears in the conversation text."""
+    conv_lower = conv_text.lower()
+    return any(kw.lower() in conv_lower for kw in _extract_keywords(skill))
+
+
 def get_challenge_skill_prompt() -> str:
     """Return the challenge mode skill content to inject when in challenge mode."""
     skills = [s for s in list_skills() if s["enabled"] and s["type"] == "challenge"]
@@ -148,14 +162,32 @@ def get_challenge_skill_prompt() -> str:
     return "\n## Challenge Mode Instructions\n\n" + skills[0]["content"]
 
 
-def get_enabled_skills_prompt() -> str:
-    """Build a skills block to inject into the system prompt (excludes profile_update and challenge types)."""
-    skills = [s for s in list_skills() if s["enabled"] and s["type"] not in ("profile_update", "challenge")]
-    if not skills:
+def get_enabled_skills_prompt(messages: list[dict] | None = None) -> str:
+    """Build a skills block to inject into the system prompt.
+
+    - global / teaching_strategy skills: always included.
+    - knowledge_point skills: only included when their keywords appear in
+      the recent conversation (messages). If messages is empty or None,
+      no knowledge_point skills are injected (avoids cold-start noise).
+    """
+    all_skills = [s for s in list_skills() if s["enabled"] and s["type"] not in ("profile_update", "challenge")]
+
+    always = [s for s in all_skills if s["type"] in ("global", "teaching_strategy")]
+
+    kp_skills = [s for s in all_skills if s["type"] == "knowledge_point"]
+    if messages and kp_skills:
+        # Build a single lowercase string from recent messages for matching
+        conv_text = " ".join(m.get("content", "") for m in messages[-8:])
+        relevant_kp = [s for s in kp_skills if _skill_matches(s, conv_text)]
+    else:
+        relevant_kp = []
+
+    selected = always + relevant_kp
+    if not selected:
         return ""
 
     lines = ["\n## Teacher-Configured Skills\n"]
-    for skill in skills:
+    for skill in selected:
         type_label = {
             "knowledge_point": "Knowledge Point",
             "teaching_strategy": "Teaching Strategy",

@@ -51,6 +51,8 @@ def _migrate_sqlite() -> None:
         add_col("conversations", "system_prompt", "TEXT")
         add_col("students", "daily_token_limit", "INTEGER")
         add_col("sessions", "mode", "VARCHAR(32)")
+        add_col("sessions", "doc_path", "TEXT")
+        add_col("sessions", "doc_media_type", "VARCHAR(64)")
         conn.commit()
     finally:
         conn.close()
