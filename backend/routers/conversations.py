@@ -18,6 +18,7 @@ class ConversationOut(BaseModel):
     session_id: int
     role: str
     content: str
+    system_prompt: Optional[str] = None
     created_at: Optional[str] = None
 
 
@@ -49,6 +50,7 @@ def list_conversations(
             session_id=c.session_id,
             role=c.role,
             content=c.content,
+            system_prompt=c.system_prompt,
             created_at=c.created_at.isoformat() if c.created_at else None,
         )
         for c, name in rows

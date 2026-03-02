@@ -8,6 +8,7 @@ import {
   LogoutOutlined,
   SettingOutlined,
   RobotOutlined,
+  BookOutlined,
 } from '@ant-design/icons'
 
 const { Header, Sider, Content } = AntLayout
@@ -18,6 +19,7 @@ const menuItems = [
   { key: '/skills', icon: <BulbOutlined />, label: 'Skills' },
   { key: '/conversations', icon: <MessageOutlined />, label: '对话记录' },
   { key: '/teacher-chat', icon: <RobotOutlined />, label: '教师助手' },
+  { key: '/textbooks', icon: <BookOutlined />, label: '教材管理' },
   { key: '/model-settings', icon: <SettingOutlined />, label: '模型设置' },
 ]
 

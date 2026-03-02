@@ -59,6 +59,6 @@ def _migrate_sqlite() -> None:
 
 
 def init_db():
-    from models import teacher, student, conversation, skill, app_settings  # noqa: F401
+    from models import teacher, student, conversation, skill, app_settings, textbook  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _migrate_sqlite()

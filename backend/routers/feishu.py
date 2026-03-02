@@ -224,7 +224,7 @@ async def feishu_webhook(request: Request, background_tasks: BackgroundTasks, db
             return {"ok": True}
 
         # Call LLM
-        reply, input_tokens, output_tokens, system_prompt = agent_service.chat(db, student, session, text)
+        reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, text)
 
         # Store messages
         db.add(Conversation(student_id=student.id, session_id=session.id, role="user", content=text))

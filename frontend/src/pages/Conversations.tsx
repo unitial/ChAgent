@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { Input, DatePicker, Typography, Tag, Spin, Empty } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { getConversations, getStudents, type Conversation, type Student } from '../api'
 import dayjs from 'dayjs'
 
@@ -18,6 +20,64 @@ function groupBySessions(convs: Conversation[]): SessionGroup[] {
   return Array.from(map.entries()).map(([sessionId, messages]) => ({ sessionId, messages }))
 }
 
+interface ParsedCitation {
+  name: string
+  page: number
+  text: string
+}
+
+function parseCitationsFromPrompt(prompt: string): ParsedCitation[] {
+  const refIdx = prompt.indexOf('## 参考教材')
+  if (refIdx === -1) return []
+  const block = prompt.slice(refIdx)
+  const citations: ParsedCitation[] = []
+  // Match 《book》第 N 页：\n"text"
+  const re = /《(.+?)》第\s*(\d+)\s*页：\n"([^"]+)"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(block)) !== null) {
+    citations.push({ name: m[1], page: Number(m[2]), text: m[3] })
+  }
+  return citations
+}
+
+function SystemPromptModal({ prompt, onClose }: { prompt: string; onClose: () => void }) {
+  return (
+    <div style={modalStyles.overlay} onClick={onClose}>
+      <div style={modalStyles.box} onClick={e => e.stopPropagation()}>
+        <div style={modalStyles.header}>
+          <span style={modalStyles.title}>完整系统提示词</span>
+          <button style={modalStyles.closeBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={modalStyles.body}>
+          <pre style={modalStyles.pre}>{prompt}</pre>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CitationsPanel({ citations }: { citations: ParsedCitation[] }) {
+  const [open, setOpen] = useState(false)
+  if (citations.length === 0) return null
+  return (
+    <div style={citStyles.wrapper}>
+      <button style={citStyles.toggle} onClick={() => setOpen(o => !o)}>
+        📖 参考教材 {open ? '▲' : '▼'}
+      </button>
+      {open && (
+        <div style={citStyles.list}>
+          {citations.map((c, i) => (
+            <div key={i} style={citStyles.item}>
+              <div style={citStyles.itemHeader}>《{c.name}》第 {c.page} 页</div>
+              <div style={citStyles.itemText}>"{c.text}"</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Conversations() {
   const [students, setStudents] = useState<Student[]>([])
   const [search, setSearch] = useState('')
@@ -26,6 +86,7 @@ export default function Conversations() {
   const [loading, setLoading] = useState(false)
   const [studentsLoading, setStudentsLoading] = useState(true)
   const [dateRange, setDateRange] = useState<[string, string] | null>(null)
+  const [viewingPrompt, setViewingPrompt] = useState<string | null>(null)
   const chatBodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -69,6 +130,7 @@ export default function Conversations() {
   const selectedStudent = students.find((s) => s.id === selectedId)
 
   return (
+    <>
     <div style={styles.page}>
       {/* Left panel */}
       <div style={styles.sidebar}>
@@ -142,9 +204,28 @@ export default function Conversations() {
                 {/* Messages */}
                 {sg.messages.map((msg) => (
                   <div key={msg.id} style={msg.role === 'user' ? styles.userRow : styles.aiRow}>
-                    <div style={msg.role === 'user' ? styles.userBubble : styles.aiBubble}>
-                      <div style={styles.bubbleContent}>{msg.content}</div>
-                      <div style={styles.bubbleTime}>{dayjs(msg.created_at).format('HH:mm:ss')}</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '65%' }}>
+                      <div style={msg.role === 'user' ? styles.userBubble : styles.aiBubble}>
+                        <div style={styles.bubbleContent}>
+                          {msg.role === 'user' ? msg.content : (
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                              {msg.content}
+                            </ReactMarkdown>
+                          )}
+                        </div>
+                        <div style={styles.bubbleTime}>{dayjs(msg.created_at).format('HH:mm:ss')}</div>
+                      </div>
+                      {msg.role === 'assistant' && msg.system_prompt && (
+                        <button
+                          style={styles.promptBtn}
+                          onClick={() => setViewingPrompt(msg.system_prompt!)}
+                        >
+                          完整请求
+                        </button>
+                      )}
+                      {msg.role === 'assistant' && msg.system_prompt && (
+                        <CitationsPanel citations={parseCitationsFromPrompt(msg.system_prompt)} />
+                      )}
                     </div>
                   </div>
                 ))}
@@ -154,7 +235,45 @@ export default function Conversations() {
         </div>
       </div>
     </div>
+    {viewingPrompt && (
+      <SystemPromptModal prompt={viewingPrompt} onClose={() => setViewingPrompt(null)} />
+    )}
+    </>
   )
+}
+
+const mdComponents = {
+  p: ({ children }: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p style={{ margin: '4px 0' }}>{children}</p>
+  ),
+  table: ({ children }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>{children}</table>
+    </div>
+  ),
+  th: ({ children }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <th style={{ border: '1px solid #d9d9d9', padding: '5px 10px', background: '#f5f5f5', fontWeight: 600, textAlign: 'left' }}>{children}</th>
+  ),
+  td: ({ children }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <td style={{ border: '1px solid #e8e8e8', padding: '5px 10px' }}>{children}</td>
+  ),
+  code: ({ inline, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) =>
+    inline ? (
+      <code style={{ background: '#f0f0f0', borderRadius: 4, padding: '1px 5px', fontSize: '0.9em', fontFamily: 'monospace' }} {...props}>{children}</code>
+    ) : (
+      <pre style={{ background: '#f6f8fa', borderRadius: 8, padding: '10px 14px', overflowX: 'auto', margin: '8px 0', fontSize: 12, lineHeight: 1.6 }}>
+        <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' }} {...props}>{children}</code>
+      </pre>
+    ),
+  ul: ({ children }: React.HTMLAttributes<HTMLUListElement>) => <ul style={{ paddingLeft: 20, margin: '4px 0' }}>{children}</ul>,
+  ol: ({ children }: React.HTMLAttributes<HTMLOListElement>) => <ol style={{ paddingLeft: 20, margin: '4px 0' }}>{children}</ol>,
+  li: ({ children }: React.HTMLAttributes<HTMLLIElement>) => <li style={{ margin: '2px 0' }}>{children}</li>,
+  blockquote: ({ children }: React.HTMLAttributes<HTMLElement>) => (
+    <blockquote style={{ borderLeft: '3px solid #d9d9d9', margin: '6px 0', paddingLeft: 12, color: '#666' }}>{children}</blockquote>
+  ),
+  h1: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h3 style={{ margin: '6px 0 4px', fontSize: 15, fontWeight: 700 }}>{children}</h3>,
+  h2: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h4 style={{ margin: '6px 0 4px', fontSize: 14, fontWeight: 700 }}>{children}</h4>,
+  h3: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h5 style={{ margin: '6px 0 4px', fontSize: 13, fontWeight: 600 }}>{children}</h5>,
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -276,4 +395,33 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 4,
     textAlign: 'right',
   },
+  promptBtn: {
+    marginTop: 4,
+    background: 'none',
+    border: 'none',
+    color: '#aaa',
+    fontSize: 11,
+    cursor: 'pointer',
+    padding: '2px 4px',
+    textDecoration: 'underline',
+  },
+}
+
+const citStyles: Record<string, React.CSSProperties> = {
+  wrapper: { marginTop: 6, maxWidth: '100%' },
+  toggle: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontSize: 12, color: '#666', fontWeight: 500 },
+  list: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 },
+  item: { background: '#f6f8fa', border: '1px solid #e8e8e8', borderRadius: 8, padding: '8px 12px' },
+  itemHeader: { fontSize: 12, fontWeight: 600, color: '#1677ff', marginBottom: 4 },
+  itemText: { fontSize: 12, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+}
+
+const modalStyles: Record<string, React.CSSProperties> = {
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  box: { background: '#fff', borderRadius: 12, width: '100%', maxWidth: 720, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 40px rgba(0,0,0,0.2)' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' },
+  title: { fontWeight: 700, fontSize: 15 },
+  closeBtn: { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#888', lineHeight: '1' },
+  body: { overflowY: 'auto', padding: '16px 20px' },
+  pre: { margin: 0, background: '#f6f8fa', borderRadius: 8, padding: '12px 14px', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#333', border: '1px solid #e8e8e8', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' },
 }

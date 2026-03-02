@@ -19,6 +19,7 @@ export interface Student {
     learning_style?: string
     recent_summary?: string
   }
+  profile_aspects: string[]
   daily_token_limit: number | null
   today_tokens: number
   created_at: string
@@ -140,6 +141,23 @@ export interface StudentChatResponse {
   session_id: number
   session_mode: string | null
   system_prompt: string
+  citations: Citation[]
+}
+
+export interface Citation {
+  textbook_name: string
+  page_num: number
+  text: string
+  score: number
+}
+
+export interface Textbook {
+  id: number
+  name: string
+  status: 'pending' | 'indexing' | 'ready' | 'error'
+  chunk_count: number
+  error_msg: string | null
+  created_at: string
 }
 
 export interface StudentHistoryMessage {
@@ -182,3 +200,14 @@ export const startChallenge = () =>
 
 export const getActiveChallenge = () =>
   studentApi.get<ChallengeSession | null>('/student/challenge/active')
+
+// Textbooks (teacher)
+export const getTextbooks = () => api.get<Textbook[]>('/textbooks')
+export const getTextbook = (id: number) => api.get<Textbook>(`/textbooks/${id}`)
+export const deleteTextbook = (id: number) => api.delete(`/textbooks/${id}`)
+export const uploadTextbook = (name: string, file: File) => {
+  const form = new FormData()
+  form.append('name', name)
+  form.append('file', file)
+  return api.post<Textbook>('/textbooks', form)
+}

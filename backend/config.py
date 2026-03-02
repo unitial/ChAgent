@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 10080
     database_url: str = "sqlite:///./chagent.db"
     session_timeout_minutes: int = 30
+    hf_endpoint: str = ""
 
     class Config:
         env_file = ".env"

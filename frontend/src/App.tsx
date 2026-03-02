@@ -6,6 +6,7 @@ import Skills from './pages/Skills'
 import Conversations from './pages/Conversations'
 import ModelSettingsPage from './pages/ModelSettings'
 import TeacherChat from './pages/TeacherChat'
+import Textbooks from './pages/Textbooks'
 import Layout from './components/Layout'
 import StudentChat from './pages/StudentChat'
 
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="conversations" element={<Conversations />} />
           <Route path="model-settings" element={<ModelSettingsPage />} />
           <Route path="teacher-chat" element={<TeacherChat />} />
+          <Route path="textbooks" element={<Textbooks />} />
         </Route>
       </Routes>
     </BrowserRouter>

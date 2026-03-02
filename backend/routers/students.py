@@ -10,6 +10,7 @@ from database import get_db
 from models.student import Student
 from models.conversation import Conversation, Session as ConvSession
 from services.usage import get_daily_tokens, get_daily_limit_info
+from services.profile import list_profile_aspects
 from routers.auth import get_current_teacher
 
 router = APIRouter(prefix="/api/students", tags=["students"])
@@ -20,6 +21,7 @@ class StudentOut(BaseModel):
     name: str
     feishu_user_id: Optional[str] = None
     profile_json: Optional[dict] = None
+    profile_aspects: list[str] = []   # names of file-based profile aspects
     daily_token_limit: Optional[int] = None
     today_tokens: int = 0
     created_at: Optional[str] = None
@@ -80,6 +82,7 @@ def list_students(db: DBSession = Depends(get_db), _=Depends(get_current_teacher
             name=s.name,
             feishu_user_id=s.feishu_user_id,
             profile_json=s.profile_json,
+            profile_aspects=[a["name"] for a in list_profile_aspects(s.id)],
             daily_token_limit=s.daily_token_limit,
             today_tokens=int(today_tokens),
             created_at=s.created_at.isoformat() if s.created_at else None,

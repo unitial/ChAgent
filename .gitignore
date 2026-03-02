@@ -33,3 +33,7 @@ Thumbs.db
 # PDF source materials
 *.pdf
 *.pdf:Zone.Identifier
+
+# RAG data (generated at runtime)
+backend/chroma_db/
+backend/textbook_files/

@@ -55,6 +55,7 @@ class ChatResponse(BaseModel):
     session_mode: Optional[str] = None
     system_prompt: str
     doc_filename: Optional[str] = None
+    citations: list[dict] = []
 
 
 class HistoryMessage(BaseModel):
@@ -277,7 +278,7 @@ async def student_chat(
         session = get_or_create_session(db, student)
 
     check_daily_limit(db, student)
-    reply, input_tokens, output_tokens, system_prompt = agent_service.chat(db, student, session, text)
+    reply, input_tokens, output_tokens, system_prompt, citations = agent_service.chat(db, student, session, text)
 
     db.add(Conversation(student_id=student.id, session_id=session.id, role="user", content=text))
     db.add(Conversation(
@@ -295,7 +296,7 @@ async def student_chat(
         # Return the original media type hint as a simple label
         doc_filename = Path(session.doc_path).name
 
-    return {"reply": reply, "session_id": session.id, "session_mode": session.mode, "system_prompt": system_prompt, "doc_filename": doc_filename}
+    return {"reply": reply, "session_id": session.id, "session_mode": session.mode, "system_prompt": system_prompt, "doc_filename": doc_filename, "citations": citations}
 
 
 @router.post("/chat/upload", response_model=ChatResponse)
@@ -348,7 +349,7 @@ async def student_chat_upload(
         "media_type": media_type,
         "data": base64.b64encode(saved_path.read_bytes()).decode(),
     }
-    reply, input_tokens, output_tokens, system_prompt = agent_service.chat(
+    reply, input_tokens, output_tokens, system_prompt, citations = agent_service.chat(
         db, student, session, text, document=document
     )
 
@@ -369,6 +370,7 @@ async def student_chat_upload(
         "session_mode": session.mode,
         "system_prompt": system_prompt,
         "doc_filename": file.filename,
+        "citations": citations,
     }
 
 
@@ -436,7 +438,7 @@ def challenge_start(
         "请用中文向学生打招呼，简要说明挑战模式的玩法，然后列出上述知识领域供学生选择，"
         "同时说明学生也可以自由输入任何想挑战的主题。）"
     )
-    reply, input_tokens, output_tokens, system_prompt = agent_service.chat(db, student, session, kickoff)
+    reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, kickoff)
     db.add(Conversation(
         student_id=student.id, session_id=session.id,
         role="assistant", content=reply,

@@ -53,7 +53,7 @@ def _build_profile_context(student: Student) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(db: DBSession, student: Student, session: ConvSession = None, messages: list[dict] | None = None) -> str:
+def build_system_prompt(db: DBSession, student: Student, session: ConvSession = None, messages: list[dict] | None = None, retrieval_context: str = "") -> str:
     parts = [BASE_SYSTEM_PROMPT]
     skills_block = get_enabled_skills_prompt(messages)
     if skills_block:
@@ -62,6 +62,8 @@ def build_system_prompt(db: DBSession, student: Student, session: ConvSession = 
         challenge_block = get_challenge_skill_prompt()
         if challenge_block:
             parts.append(challenge_block)
+    if retrieval_context:
+        parts.append(retrieval_context)
     profile_block = _build_profile_context(student)
     parts.append(profile_block)
     return "\n".join(parts)
@@ -91,12 +93,25 @@ def _load_session_document(session: ConvSession) -> dict | None:
     }
 
 
-def chat(db: DBSession, student: Student, session: ConvSession, user_message: str, document: dict | None = None) -> tuple[str, int, int, str]:
-    """Send a message to the configured LLM. Returns (reply, input_tokens, output_tokens, system_prompt)."""
+def chat(db: DBSession, student: Student, session: ConvSession, user_message: str, document: dict | None = None) -> tuple[str, int, int, str, list[dict]]:
+    """Send a message to the configured LLM. Returns (reply, input_tokens, output_tokens, system_prompt, citations)."""
+    from services.retrieval import search
+
+    citations = search(user_message)
+    retrieval_context = _format_citations_for_prompt(citations) if citations else ""
+
     history = get_recent_history(db, session)
     messages = history + [{"role": "user", "content": user_message}]
-    # Pass full message context so skill selection can match relevant knowledge points
-    system_prompt = build_system_prompt(db, student, session, messages)
+    system_prompt = build_system_prompt(db, student, session, messages, retrieval_context=retrieval_context)
     doc = document if document is not None else _load_session_document(session)
     text, input_tokens, output_tokens = llm_chat(db, system_prompt, messages, document=doc)
-    return text, input_tokens, output_tokens, system_prompt
+    return text, input_tokens, output_tokens, system_prompt, citations
+
+
+def _format_citations_for_prompt(citations: list[dict]) -> str:
+    """Format retrieved citations into a system prompt block."""
+    lines = ["\n## 参考教材\n以下是与学生问题相关的教材原文片段，请在回答时参考，并尽量基于这些内容作答：\n"]
+    for c in citations:
+        lines.append(f"《{c['textbook_name']}》第 {c['page_num']} 页：")
+        lines.append(f'"{c["text"]}"\n')
+    return "\n".join(lines)

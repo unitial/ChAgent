@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, KeyboardEvent } from 'react'
-import { studentLogin, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, StudentHistoryMessage } from '../api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { studentLogin, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, StudentHistoryMessage, Citation } from '../api'
 
 type Stage = 'unregistered' | 'chatting'
 
@@ -10,6 +12,7 @@ interface Message {
   content: string
   system_prompt?: string
   attachedFile?: string  // filename shown in bubble
+  citations?: Citation[]
 }
 
 interface ChallengeState {
@@ -64,6 +67,41 @@ function SystemPromptModal({ prompt, onClose }: { prompt: string; onClose: () =>
   )
 }
 
+function parseCitationsFromPrompt(prompt: string): Citation[] {
+  const refIdx = prompt.indexOf('## 参考教材')
+  if (refIdx === -1) return []
+  const block = prompt.slice(refIdx)
+  const re = /《(.+?)》第\s*(\d+)\s*页：\n"([^"]+)"/g
+  const results: Citation[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(block)) !== null) {
+    results.push({ textbook_name: m[1], page_num: Number(m[2]), text: m[3], score: 0 })
+  }
+  return results
+}
+
+function CitationsPanel({ citations }: { citations: Citation[] }) {
+  const [open, setOpen] = useState(false)
+  if (!citations || citations.length === 0) return null
+  return (
+    <div style={citationStyles.wrapper}>
+      <button style={citationStyles.toggle} onClick={() => setOpen(o => !o)}>
+        📖 参考教材 {open ? '▲' : '▼'}
+      </button>
+      {open && (
+        <div style={citationStyles.list}>
+          {citations.map((c, i) => (
+            <div key={i} style={citationStyles.item}>
+              <div style={citationStyles.itemHeader}>《{c.textbook_name}》第 {c.page_num} 页</div>
+              <div style={citationStyles.itemText}>"{c.text}"</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function StudentChat() {
   const [stage, setStage] = useState<Stage>(() =>
     localStorage.getItem('student_token') ? 'chatting' : 'unregistered'
@@ -110,6 +148,7 @@ export default function StudentChat() {
         role: m.role,
         content: m.content,
         system_prompt: m.system_prompt,
+        citations: m.system_prompt ? parseCitationsFromPrompt(m.system_prompt) : [],
       })))
     } catch {
       // ignore
@@ -231,6 +270,7 @@ export default function StudentChat() {
         content: res.data.reply,
         session_id: res.data.session_id,
         system_prompt: res.data.system_prompt,
+        citations: res.data.citations ?? [],
       }])
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: '出错了，请重试' }])
@@ -387,7 +427,11 @@ export default function StudentChat() {
                   </div>
                 )}
                 <div style={msg.role === 'user' ? styles.userBubble : styles.aiBubble}>
-                  {msg.content}
+                  {msg.role === 'user' ? msg.content : (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+                      {msg.content}
+                    </ReactMarkdown>
+                  )}
                 </div>
                 {msg.role === 'assistant' && msg.system_prompt && (
                   <button
@@ -397,6 +441,9 @@ export default function StudentChat() {
                   >
                     完整请求
                   </button>
+                )}
+                {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                  <CitationsPanel citations={msg.citations} />
                 )}
               </div>
             </div>
@@ -469,6 +516,53 @@ export default function StudentChat() {
   )
 }
 
+// Markdown component overrides for the AI bubble
+const mdComponents = {
+  // Remove top/bottom margin on paragraphs so they don't bloat the bubble
+  p: ({ children }: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p style={{ margin: '4px 0' }}>{children}</p>
+  ),
+  // Tables
+  table: ({ children }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 14 }}>{children}</table>
+    </div>
+  ),
+  th: ({ children }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <th style={{ border: '1px solid #d9d9d9', padding: '6px 12px', background: '#f5f5f5', fontWeight: 600, textAlign: 'left' }}>{children}</th>
+  ),
+  td: ({ children }: React.HTMLAttributes<HTMLTableCellElement>) => (
+    <td style={{ border: '1px solid #e8e8e8', padding: '6px 12px' }}>{children}</td>
+  ),
+  // Code blocks
+  code: ({ inline, children, ...props }: React.HTMLAttributes<HTMLElement> & { inline?: boolean }) =>
+    inline ? (
+      <code style={{ background: '#f0f0f0', borderRadius: 4, padding: '1px 5px', fontSize: '0.9em', fontFamily: 'monospace' }} {...props}>{children}</code>
+    ) : (
+      <pre style={{ background: '#f6f8fa', borderRadius: 8, padding: '10px 14px', overflowX: 'auto', margin: '8px 0', fontSize: 13, lineHeight: 1.6 }}>
+        <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' }} {...props}>{children}</code>
+      </pre>
+    ),
+  // Lists
+  ul: ({ children }: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul style={{ paddingLeft: 20, margin: '4px 0' }}>{children}</ul>
+  ),
+  ol: ({ children }: React.HTMLAttributes<HTMLOListElement>) => (
+    <ol style={{ paddingLeft: 20, margin: '4px 0' }}>{children}</ol>
+  ),
+  li: ({ children }: React.HTMLAttributes<HTMLLIElement>) => (
+    <li style={{ margin: '2px 0' }}>{children}</li>
+  ),
+  // Blockquote
+  blockquote: ({ children }: React.HTMLAttributes<HTMLElement>) => (
+    <blockquote style={{ borderLeft: '3px solid #d9d9d9', margin: '6px 0', paddingLeft: 12, color: '#666' }}>{children}</blockquote>
+  ),
+  // Headings — scale down since they're inside a chat bubble
+  h1: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h3 style={{ margin: '6px 0 4px', fontSize: 16, fontWeight: 700 }}>{children}</h3>,
+  h2: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h4 style={{ margin: '6px 0 4px', fontSize: 15, fontWeight: 700 }}>{children}</h4>,
+  h3: ({ children }: React.HTMLAttributes<HTMLHeadingElement>) => <h5 style={{ margin: '6px 0 4px', fontSize: 14, fontWeight: 600 }}>{children}</h5>,
+}
+
 const styles: Record<string, React.CSSProperties> = {
   loginWrapper: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#f0f2f5' },
   loginCard: { background: '#fff', borderRadius: 12, padding: '40px 48px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', width: 360, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -493,7 +587,7 @@ const styles: Record<string, React.CSSProperties> = {
   userRow: { display: 'flex', justifyContent: 'flex-end' },
   aiRow: { display: 'flex', justifyContent: 'flex-start' },
   userBubble: { background: '#1677ff', color: '#fff', borderRadius: '18px 18px 4px 18px', padding: '10px 16px', fontSize: 15, lineHeight: 1.6, wordBreak: 'break-word', whiteSpace: 'pre-wrap' },
-  aiBubble: { background: '#fff', color: '#222', borderRadius: '18px 18px 18px 4px', padding: '10px 16px', fontSize: 15, lineHeight: 1.6, wordBreak: 'break-word', whiteSpace: 'pre-wrap', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' },
+  aiBubble: { background: '#fff', color: '#222', borderRadius: '18px 18px 18px 4px', padding: '10px 16px', fontSize: 15, lineHeight: 1.6, wordBreak: 'break-word', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' },
   promptBtn: { marginTop: 4, background: 'none', border: 'none', color: '#aaa', fontSize: 11, cursor: 'pointer', padding: '2px 4px', textDecoration: 'underline' },
   fileBadgeMsg: { fontSize: 12, color: '#666', background: '#f0f0f0', borderRadius: 6, padding: '3px 10px', marginBottom: 4, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   filePreviewBar: { background: '#fafafa', borderTop: '1px solid #f0f0f0', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
@@ -507,6 +601,15 @@ const styles: Record<string, React.CSSProperties> = {
   attachBtn: { background: '#fff', border: '1px solid #d9d9d9', borderRadius: 8, width: 40, height: 44, cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'color 0.2s, border-color 0.2s' },
   textarea: { flex: 1, padding: '10px 14px', fontSize: 15, border: '1px solid #d9d9d9', borderRadius: 8, resize: 'none', outline: 'none', lineHeight: 1.5, fontFamily: 'inherit' },
   sendBtn: { padding: '10px 24px', fontSize: 15, color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, height: 44, transition: 'background 0.2s' },
+}
+
+const citationStyles: Record<string, React.CSSProperties> = {
+  wrapper: { marginTop: 6, maxWidth: '100%' },
+  toggle: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontSize: 12, color: '#666', fontWeight: 500 },
+  list: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 },
+  item: { background: '#f6f8fa', border: '1px solid #e8e8e8', borderRadius: 8, padding: '8px 12px' },
+  itemHeader: { fontSize: 12, fontWeight: 600, color: '#1677ff', marginBottom: 4 },
+  itemText: { fontSize: 12, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
 }
 
 const modalStyles: Record<string, React.CSSProperties> = {

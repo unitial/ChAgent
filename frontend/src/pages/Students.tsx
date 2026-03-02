@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip } from 'antd'
+import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip, Tag } from 'antd'
 import { EyeOutlined, ControlOutlined, SyncOutlined } from '@ant-design/icons'
 import {
   getStudents, setStudentLimit, getStudentConversations,
@@ -91,9 +91,21 @@ export default function Students() {
       render: (v: string) => dayjs(v).format('YYYY-MM-DD HH:mm'),
     },
     {
-      title: '学习风格',
+      title: '画像维度',
       key: 'style',
-      render: (_: unknown, record: Student) => record.profile_json?.learning_style || '-',
+      render: (_: unknown, record: Student) => {
+        if (record.profile_aspects && record.profile_aspects.length > 0) {
+          return (
+            <Space size={4} wrap>
+              {record.profile_aspects.map(a => (
+                <Tag key={a} color="blue" style={{ fontSize: 11, margin: 0 }}>{a}</Tag>
+              ))}
+            </Space>
+          )
+        }
+        const style = record.profile_json?.learning_style
+        return style ? <span>{style}</span> : <span style={{ color: '#bbb' }}>—</span>
+      },
     },
     {
       title: '今日用量',

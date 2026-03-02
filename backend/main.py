@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db, SessionLocal
 from services.skills import init_skills_dir
 from services.settings import init_default_settings
+from config import get_settings
 import routers.feishu as feishu_router
 import routers.auth as auth_router
 import routers.students as students_router
@@ -17,6 +18,7 @@ import routers.student_chat as student_chat_router
 import routers.settings as settings_router
 import routers.profiles as profiles_router
 import routers.teacher_chat as teacher_chat_router
+import routers.textbooks as textbooks_router
 
 app = FastAPI(title="ChAgent", description="OS Course Teaching Bot Backend", version="0.1.0")
 
@@ -42,6 +44,11 @@ async def _nightly_profile_update() -> None:
 
 @app.on_event("startup")
 async def on_startup():
+    import os
+    settings = get_settings()
+    if settings.hf_endpoint:
+        os.environ["HF_ENDPOINT"] = settings.hf_endpoint
+
     init_db()
     init_skills_dir()
     db = SessionLocal()
@@ -49,6 +56,9 @@ async def on_startup():
         init_default_settings(db)
     finally:
         db.close()
+
+    from services.retrieval import init_retrieval
+    init_retrieval()
 
     # Nightly profile update at 23:30 Asia/Shanghai
     scheduler.add_job(
@@ -76,6 +86,7 @@ app.include_router(student_chat_router.router)
 app.include_router(settings_router.router)
 app.include_router(profiles_router.router)
 app.include_router(teacher_chat_router.router)
+app.include_router(textbooks_router.router)
 
 
 @app.get("/health")
