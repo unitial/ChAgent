@@ -13,7 +13,7 @@ from services.profile import (
     list_profile_aspects,
 )
 from services.skills import get_skill
-from services.llm import llm_chat
+from services.llm import llm_chat_with_config
 
 PROFILE_UPDATE_SKILL_SLUG = "profile-update"
 
@@ -51,8 +51,19 @@ def _get_recent_convs(db: DBSession, student_id: int, days: int = 7) -> list[dic
     return [{"role": c.role, "content": c.content} for c in convs]
 
 
+def student_needs_profile_update(db: DBSession, student: Student) -> bool:
+    """有新对话（晚于上次画像更新）则返回 True。"""
+    last = student.profile_updated_at
+    q = db.query(Conversation).filter(Conversation.student_id == student.id)
+    if last:
+        q = q.filter(Conversation.created_at > last)
+    return q.first() is not None
+
+
 async def update_student_profile(db: DBSession, student: Student) -> bool:
     """Update a student's file-based profile via LLM analysis of recent conversations."""
+    from services.settings import get_profile_model_config
+
     convs = _get_recent_convs(db, student.id)
     if not convs:
         print(f"[profile] No recent conversations for {student.name}, skipping.")
@@ -76,8 +87,9 @@ async def update_student_profile(db: DBSession, student: Student) -> bool:
     )
 
     try:
+        profile_cfg = get_profile_model_config(db)
         response_text, _, _ = await asyncio.to_thread(
-            llm_chat, db, system_prompt, [{"role": "user", "content": user_message}]
+            llm_chat_with_config, profile_cfg, system_prompt, [{"role": "user", "content": user_message}]
         )
     except Exception as e:
         print(f"[profile] LLM call failed for {student.name}: {e}")
@@ -109,16 +121,19 @@ async def update_student_profile(db: DBSession, student: Student) -> bool:
             updated += 1
 
     update_profile_index_from_aspects(student.id, student.name)
+    student.profile_updated_at = datetime.now(timezone.utc)
+    db.commit()
     print(f"[profile] Updated {updated} aspects for {student.name}")
     return True
 
 
-async def update_all_profiles(db: DBSession) -> dict:
-    from models.student import Student as StudentModel
-
-    students = db.query(StudentModel).all()
-    results = {"success": 0, "skipped": 0, "failed": 0}
+async def update_all_profiles(db: DBSession, smart: bool = True) -> dict:
+    students = db.query(Student).all()
+    results = {"success": 0, "skipped": 0, "failed": 0, "not_needed": 0}
     for student in students:
+        if smart and not student_needs_profile_update(db, student):
+            results["not_needed"] += 1
+            continue
         try:
             ok = await update_student_profile(db, student)
             results["success" if ok else "skipped"] += 1

@@ -84,7 +84,7 @@ export default function StudentProfileDrawer({ student, conversations, open, onC
     setUpdating(true)
     try {
       await triggerStudentProfileUpdate(student.id)
-      message.success('画像更新任务已启动，稍后刷新可查看结果')
+      message.info('画像更新已在后台启动，完成后请点击「刷新」查看结果')
     } catch {
       message.error('启动更新失败')
     } finally {
@@ -296,7 +296,7 @@ export default function StudentProfileDrawer({ student, conversations, open, onC
         title={isNew ? '添加画像维度' : `编辑：${editAspect?.name}`}
         open={editAspect !== null || isNew}
         onOk={handleEditSave}
-        onCancel={() => setEditAspect(null)}
+        onCancel={() => { setEditAspect(null); setIsNew(false) }}
         confirmLoading={editSaving}
         width={560}
         destroyOnClose

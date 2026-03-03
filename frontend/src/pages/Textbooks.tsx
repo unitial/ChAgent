@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { Table, Button, Upload, Input, Space, Tag, Typography, message, Popconfirm } from 'antd'
+import { Table, Button, Input, Space, Tag, Typography, message, Popconfirm } from 'antd'
 import { UploadOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getTextbooks, uploadTextbook, deleteTextbook, getTextbook, Textbook } from '../api'
+import { getTextbooks, uploadTextbook, deleteTextbook, Textbook } from '../api'
 
 const STATUS_COLOR: Record<string, string> = {
   pending: 'default',

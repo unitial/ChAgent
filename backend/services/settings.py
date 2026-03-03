@@ -37,3 +37,17 @@ def get_model_config(db: DBSession) -> dict:
         "openrouter_api_key": get_setting(db, "openrouter_api_key", ""),
         "default_daily_token_limit": int(get_setting(db, "default_daily_token_limit", "0")),
     }
+
+
+def get_profile_model_config(db: DBSession) -> dict:
+    global_cfg = get_model_config(db)
+    p = get_setting(db, "profile_update_provider", "inherit")
+    m = get_setting(db, "profile_update_model", "inherit")
+    k = get_setting(db, "profile_update_openrouter_key", "")
+    return {
+        "provider": global_cfg["provider"] if p == "inherit" else p,
+        "model": global_cfg["model"] if m == "inherit" else m,
+        "openrouter_api_key": k or global_cfg["openrouter_api_key"],
+        "raw_provider": p,
+        "raw_model": m,
+    }

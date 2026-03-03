@@ -11,6 +11,13 @@ _app_settings = get_settings()
 def llm_chat(db: DBSession, system: str, messages: list[dict], document: dict | None = None) -> tuple[str, int, int]:
     """Call the configured LLM provider. Returns (text, input_tokens, output_tokens)."""
     config = get_model_config(db)
+    return llm_chat_with_config(config, system, messages, document)
+
+
+def llm_chat_with_config(
+    config: dict, system: str, messages: list[dict], document: dict | None = None
+) -> tuple[str, int, int]:
+    """Call an LLM provider using an explicit config dict."""
     provider = config["provider"]
     model = config["model"]
 

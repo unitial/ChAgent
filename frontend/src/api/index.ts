@@ -24,6 +24,8 @@ export interface Student {
   today_tokens: number
   created_at: string
   updated_at: string
+  profile_updated_at: string | null
+  needs_profile_update: boolean
 }
 
 export interface Conversation {
@@ -66,6 +68,8 @@ export const login = (username: string, password: string) =>
   })
 
 export const getMe = () => api.get('/auth/me')
+export const changePassword = (current_password: string, new_password: string) =>
+  api.post('/auth/change-password', { current_password, new_password })
 
 // Students
 export const getStudents = () => api.get<Student[]>('/students')
@@ -77,6 +81,16 @@ export const getSkills = () => api.get<Skill[]>('/skills')
 export const createSkill = (data: Omit<Skill, 'id' | 'created_at'>) => api.post<Skill>('/skills', data)
 export const updateSkill = (id: string, data: Partial<Skill>) => api.put<Skill>(`/skills/${id}`, data)
 export const deleteSkill = (id: string) => api.delete(`/skills/${id}`)
+
+export interface SkillAutofillResult {
+  name: string
+  type: string
+  description: string
+  content: string
+  source: string
+}
+export const autofillSkill = (text: string) =>
+  api.post<SkillAutofillResult>('/skills/autofill', { text })
 
 // Model Settings
 export interface ModelSettings {
@@ -111,8 +125,22 @@ export const deleteProfileAspect = (studentId: number, slug: string) =>
   api.delete(`/students/${studentId}/profile/${slug}`)
 export const triggerStudentProfileUpdate = (id: number) =>
   api.post(`/students/${id}/profile/update`)
-export const triggerAllProfileUpdates = () =>
-  api.post('/profiles/update-all')
+export const triggerAllProfileUpdates = (force = false) =>
+  api.post('/profiles/update-all', null, { params: force ? { force: true } : {} })
+export const getProfileUpdateStatus = () =>
+  api.get<{ total: number; needs_update: number }>('/profiles/update-status')
+
+// Model Settings - Profile
+export interface ProfileModelSettings {
+  raw_provider: 'inherit' | 'anthropic' | 'openrouter'
+  raw_model: string
+  effective_provider: string
+  effective_model: string
+  openrouter_api_key_set: boolean
+}
+export const getProfileModelSettings = () => api.get<ProfileModelSettings>('/settings/profile-model')
+export const updateProfileModelSettings = (data: { provider?: string; model?: string; openrouter_api_key?: string }) =>
+  api.put('/settings/profile-model', data)
 
 // Dashboard
 export const getDashboardStats = () => api.get<DashboardStats>('/dashboard/stats')
@@ -169,8 +197,14 @@ export interface StudentHistoryMessage {
   system_prompt?: string
 }
 
-export const studentLogin = (name: string) =>
-  studentApi.post<StudentLoginResponse>('/student/login', { name })
+export const studentLogin = (name: string, password?: string) =>
+  studentApi.post<StudentLoginResponse>('/student/login', { name, password })
+
+export const studentRegister = (name: string, password: string) =>
+  studentApi.post<StudentLoginResponse>('/student/register', { name, password })
+
+export const studentChangePassword = (current_password: string, new_password: string) =>
+  studentApi.post('/student/change-password', { current_password, new_password })
 
 export const studentNewSession = () =>
   studentApi.post<{ session_id: number }>('/student/session/new')
@@ -188,6 +222,17 @@ export const studentChatWithFile = (message: string, file: File, session_id?: nu
 
 export const studentHistory = (session_id?: number) =>
   studentApi.get<StudentHistoryMessage[]>('/student/history', { params: session_id != null ? { session_id } : undefined })
+
+export interface StudentSession {
+  id: number
+  started_at: string
+  message_count: number
+  last_message: string | null
+  mode: string | null
+}
+
+export const studentListSessions = () =>
+  studentApi.get<StudentSession[]>('/student/sessions')
 
 export interface ChallengeSession {
   session_id: number

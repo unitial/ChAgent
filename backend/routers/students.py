@@ -11,6 +11,7 @@ from models.student import Student
 from models.conversation import Conversation, Session as ConvSession
 from services.usage import get_daily_tokens, get_daily_limit_info
 from services.profile import list_profile_aspects
+from services.profile_updater import student_needs_profile_update
 from routers.auth import get_current_teacher
 
 router = APIRouter(prefix="/api/students", tags=["students"])
@@ -26,6 +27,8 @@ class StudentOut(BaseModel):
     today_tokens: int = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    profile_updated_at: Optional[str] = None
+    needs_profile_update: bool = False
 
     class Config:
         from_attributes = True
@@ -87,6 +90,8 @@ def list_students(db: DBSession = Depends(get_db), _=Depends(get_current_teacher
             today_tokens=int(today_tokens),
             created_at=s.created_at.isoformat() if s.created_at else None,
             updated_at=s.updated_at.isoformat() if s.updated_at else None,
+            profile_updated_at=s.profile_updated_at.isoformat() if s.profile_updated_at else None,
+            needs_profile_update=student_needs_profile_update(db, s),
         )
         for s, today_tokens in rows
     ]

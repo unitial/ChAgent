@@ -18,7 +18,8 @@ from services import agent as agent_service
 from services import skills as skills_service
 from services.memory import summarize_session
 from services.usage import check_daily_limit
-from routers.auth import create_access_token
+from services.profile import get_profile_context_for_prompt
+from routers.auth import create_access_token, verify_password, hash_password
 from config import get_settings
 
 settings = get_settings()
@@ -42,6 +43,17 @@ ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt"}
 
 class LoginRequest(BaseModel):
     name: str
+    password: Optional[str] = None
+
+
+class RegisterRequest(BaseModel):
+    name: str
+    password: str
+
+
+class ChangeStudentPasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class ChatRequest(BaseModel):
@@ -65,6 +77,14 @@ class HistoryMessage(BaseModel):
     content: str
     created_at: str
     system_prompt: Optional[str] = None
+
+
+class SessionOut(BaseModel):
+    id: int
+    started_at: str
+    message_count: int
+    last_message: Optional[str] = None
+    mode: Optional[str] = None
 
 
 class ChallengeSessionOut(BaseModel):
@@ -226,6 +246,49 @@ def _save_document(file_bytes: bytes, original_filename: str, content_type: str)
 
 # --- Routes ---
 
+@router.get("/sessions", response_model=list[SessionOut])
+def list_sessions(
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """Return recent sessions for the current student, latest first."""
+    sessions = (
+        db.query(ConvSession)
+        .filter(ConvSession.student_id == student.id)
+        .order_by(ConvSession.started_at.desc())
+        .limit(20)
+        .all()
+    )
+    if not sessions:
+        return []
+
+    session_ids = [s.id for s in sessions]
+    convs = (
+        db.query(Conversation)
+        .filter(Conversation.session_id.in_(session_ids))
+        .order_by(Conversation.created_at.asc())
+        .all()
+    )
+
+    from collections import defaultdict
+    conv_map: dict = defaultdict(list)
+    for c in convs:
+        conv_map[c.session_id].append(c)
+
+    result = []
+    for s in sessions:
+        msgs = conv_map[s.id]
+        last_user = next((m for m in reversed(msgs) if m.role == "user"), None)
+        result.append(SessionOut(
+            id=s.id,
+            started_at=s.started_at.isoformat(),
+            message_count=len(msgs),
+            last_message=last_user.content[:50] if last_user else None,
+            mode=s.mode,
+        ))
+    return result
+
+
 @router.post("/session/new")
 def new_session(
     db: DBSession = Depends(get_db),
@@ -239,21 +302,63 @@ def new_session(
     return {"session_id": session.id}
 
 
-@router.post("/login")
-def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
+@router.post("/register")
+def student_register(req: RegisterRequest, db: DBSession = Depends(get_db)):
     name = req.name.strip()
     if not name:
-        raise HTTPException(status_code=400, detail="Name cannot be empty")
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少需要 6 位")
 
     student = db.query(Student).filter(Student.name == name).first()
-    if not student:
-        student = Student(name=name, feishu_user_id=None)
+    if student:
+        if student.hashed_password:
+            raise HTTPException(status_code=400, detail="该姓名已注册，请直接登录")
+        # Legacy account without password — let them claim it by setting a password
+        student.hashed_password = hash_password(req.password)
+        db.commit()
+    else:
+        student = Student(name=name, feishu_user_id=None, hashed_password=hash_password(req.password))
         db.add(student)
         db.commit()
         db.refresh(student)
 
     token = create_access_token({"sub": str(student.id), "type": "student"})
     return {"access_token": token, "token_type": "bearer", "name": student.name}
+
+
+@router.post("/login")
+def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+
+    student = db.query(Student).filter(Student.name == name).first()
+    if not student:
+        raise HTTPException(status_code=400, detail="该姓名未注册，请先注册")
+
+    if student.hashed_password:
+        if not req.password or not verify_password(req.password, student.hashed_password):
+            raise HTTPException(status_code=400, detail="密码错误")
+    # Legacy accounts without a password: allow login without password
+
+    token = create_access_token({"sub": str(student.id), "type": "student"})
+    return {"access_token": token, "token_type": "bearer", "name": student.name}
+
+
+@router.post("/change-password")
+def student_change_password(
+    req: ChangeStudentPasswordRequest,
+    student: Student = Depends(get_current_student),
+    db: DBSession = Depends(get_db),
+):
+    if student.hashed_password and not verify_password(req.current_password, student.hashed_password):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码至少需要 6 位")
+    student.hashed_password = hash_password(req.new_password)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -431,13 +536,50 @@ def challenge_start(
     db.refresh(session)
 
     # Generate an opening greeting from the AI for new sessions
-    kp_skills = [s["name"] for s in skills_service.list_skills() if s["enabled"] and s["type"] == "knowledge_point"]
-    topics_str = "、".join(kp_skills) if kp_skills else "（暂无预设知识点）"
-    kickoff = (
-        f"（系统提示：挑战模式新会话已启动。当前可供选择的知识领域有：{topics_str}。"
-        "请用中文向学生打招呼，简要说明挑战模式的玩法，然后列出上述知识领域供学生选择，"
-        "同时说明学生也可以自由输入任何想挑战的主题。）"
+    # Build KP skill info (name + description)
+    kp_skills = [s for s in skills_service.list_skills() if s["enabled"] and s["type"] == "knowledge_point"]
+    if kp_skills:
+        topics_info = "\n".join(
+            f"- {s['name']}" + (f"：{s['description']}" if s.get("description") else "")
+            for s in kp_skills
+        )
+    else:
+        topics_info = "（暂无预设知识点）"
+
+    # Get student profile context
+    profile_context = get_profile_context_for_prompt(student.id)
+
+    # Get recent normal session conversations (last 10 messages)
+    recent_convs = (
+        db.query(Conversation)
+        .join(ConvSession, Conversation.session_id == ConvSession.id)
+        .filter(
+            ConvSession.student_id == student.id,
+            ConvSession.mode.is_(None),
+        )
+        .order_by(Conversation.created_at.desc())
+        .limit(10)
+        .all()
     )
+    if recent_convs:
+        recent_msgs = "\n".join(
+            f"[{c.role}]: {c.content[:200]}" for c in reversed(recent_convs)
+        )
+    else:
+        recent_msgs = "（无近期对话记录）"
+
+    kickoff = f"""（系统提示：挑战模式新会话已启动。
+
+**学生画像**：
+{profile_context if profile_context else '暂无画像数据'}
+
+**近期对话记录（最近10条）**：
+{recent_msgs}
+
+**可供出题的预设知识领域**：
+{topics_info}
+
+请根据以上信息，用中文向学生打招呼，简要说明挑战模式的玩法，然后**主动推荐 1-2 个基于学生薄弱环节或近期话题的挑战方向**，并说明理由。同时告知学生可以接受推荐、选择其他知识领域，或自由输入任何想挑战的主题——即使没有预设知识领域也可以继续挑战。）"""
     reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, kickoff)
     db.add(Conversation(
         student_id=student.id, session_id=session.id,

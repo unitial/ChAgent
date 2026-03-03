@@ -1,8 +1,11 @@
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from database import init_db, SessionLocal
 from services.skills import init_skills_dir
@@ -92,3 +95,13 @@ app.include_router(textbooks_router.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Serve frontend SPA (must be last)
+_FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str):
+        return FileResponse(_FRONTEND_DIST / "index.html")

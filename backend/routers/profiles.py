@@ -98,14 +98,24 @@ async def trigger_student_update(
 @router.post("/api/profiles/update-all")
 async def trigger_all_updates(
     background_tasks: BackgroundTasks,
+    force: bool = False,
     _=Depends(get_current_teacher),
 ):
     async def _run():
         _db = SessionLocal()
         try:
-            await update_all_profiles(_db)
+            await update_all_profiles(_db, smart=not force)
         finally:
             _db.close()
 
     background_tasks.add_task(_run)
     return {"ok": True, "message": "Profile update for all students started in background"}
+
+
+@router.get("/api/profiles/update-status")
+def get_update_status(db: DBSession = Depends(get_db), _=Depends(get_current_teacher)):
+    from models.student import Student as SM
+    from services.profile_updater import student_needs_profile_update
+    students = db.query(SM).all()
+    needs = [s.id for s in students if student_needs_profile_update(db, s)]
+    return {"total": len(students), "needs_update": len(needs)}

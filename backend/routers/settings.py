@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session as DBSession
 from typing import Optional
 
 from database import get_db
-from services.settings import get_model_config, set_setting
+from services.settings import get_model_config, get_profile_model_config, set_setting
 from routers.auth import get_current_teacher
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -54,4 +54,51 @@ def update_model_settings(
         set_setting(db, "openrouter_api_key", payload.openrouter_api_key)
     if payload.default_daily_token_limit is not None:
         set_setting(db, "default_daily_token_limit", str(payload.default_daily_token_limit))
+    return {"ok": True}
+
+
+class ProfileModelSettingsUpdate(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+
+
+class ProfileModelSettingsOut(BaseModel):
+    raw_provider: str
+    raw_model: str
+    effective_provider: str
+    effective_model: str
+    openrouter_api_key_set: bool
+
+
+VALID_PROFILE_PROVIDERS = {"inherit", "anthropic", "openrouter"}
+
+
+@router.get("/profile-model", response_model=ProfileModelSettingsOut)
+def get_profile_model_settings(db: DBSession = Depends(get_db), _=Depends(get_current_teacher)):
+    cfg = get_profile_model_config(db)
+    return ProfileModelSettingsOut(
+        raw_provider=cfg["raw_provider"],
+        raw_model=cfg["raw_model"],
+        effective_provider=cfg["provider"],
+        effective_model=cfg["model"],
+        openrouter_api_key_set=bool(cfg["openrouter_api_key"]),
+    )
+
+
+@router.put("/profile-model")
+def update_profile_model_settings(
+    payload: ProfileModelSettingsUpdate,
+    db: DBSession = Depends(get_db),
+    _=Depends(get_current_teacher),
+):
+    if payload.provider is not None:
+        if payload.provider not in VALID_PROFILE_PROVIDERS:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail=f"provider must be one of {VALID_PROFILE_PROVIDERS}")
+        set_setting(db, "profile_update_provider", payload.provider)
+    if payload.model is not None:
+        set_setting(db, "profile_update_model", payload.model)
+    if payload.openrouter_api_key is not None:
+        set_setting(db, "profile_update_openrouter_key", payload.openrouter_api_key)
     return {"ok": True}

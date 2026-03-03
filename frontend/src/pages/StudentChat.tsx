@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, KeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { studentLogin, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, StudentHistoryMessage, Citation } from '../api'
+import { studentLogin, studentRegister, studentChangePassword, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, studentListSessions, StudentHistoryMessage, Citation, StudentSession } from '../api'
 
 type Stage = 'unregistered' | 'chatting'
+type AuthTab = 'login' | 'register'
 
 interface Message {
   id?: number
@@ -22,50 +23,6 @@ interface ChallengeState {
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.pptx', '.ppt']
 const MAX_FILE_MB = 20
-
-function SystemPromptModal({ prompt, onClose }: { prompt: string; onClose: () => void }) {
-  const sections: { title: string; content: string }[] = []
-  const skillsIdx = prompt.indexOf('\n## Teacher-Configured Skills')
-  const challengeIdx = prompt.indexOf('\n## Challenge Mode Instructions')
-  const profileIdx = prompt.search(/\n## Student (Knowledge Profile|Profile)/)
-
-  const cut = (start: number, end: number) =>
-    prompt.slice(start, end === -1 ? undefined : end).trim()
-
-  const baseEnd = skillsIdx !== -1 ? skillsIdx : challengeIdx !== -1 ? challengeIdx : profileIdx !== -1 ? profileIdx : -1
-  sections.push({ title: '基础指令', content: cut(0, baseEnd) })
-
-  if (skillsIdx !== -1) {
-    const skillsEnd = challengeIdx !== -1 && challengeIdx > skillsIdx ? challengeIdx : profileIdx !== -1 && profileIdx > skillsIdx ? profileIdx : -1
-    sections.push({ title: 'Teacher Skills', content: cut(skillsIdx, skillsEnd) })
-  }
-  if (challengeIdx !== -1) {
-    const challengeEnd = profileIdx !== -1 && profileIdx > challengeIdx ? profileIdx : -1
-    sections.push({ title: '挑战模式指令', content: cut(challengeIdx, challengeEnd) })
-  }
-  if (profileIdx !== -1) {
-    sections.push({ title: '学生画像', content: cut(profileIdx, -1) })
-  }
-
-  return (
-    <div style={modalStyles.overlay} onClick={onClose}>
-      <div style={modalStyles.box} onClick={e => e.stopPropagation()}>
-        <div style={modalStyles.header}>
-          <span style={modalStyles.title}>完整系统提示词</span>
-          <button style={modalStyles.closeBtn} onClick={onClose}>✕</button>
-        </div>
-        <div style={modalStyles.body}>
-          {sections.map((s, i) => (
-            <div key={i} style={modalStyles.section}>
-              <div style={modalStyles.sectionTitle}>{s.title}</div>
-              <pre style={modalStyles.pre}>{s.content}</pre>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 function parseCitationsFromPrompt(prompt: string): Citation[] {
   const refIdx = prompt.indexOf('## 参考教材')
@@ -106,13 +63,15 @@ export default function StudentChat() {
   const [stage, setStage] = useState<Stage>(() =>
     localStorage.getItem('student_token') ? 'chatting' : 'unregistered'
   )
+  const [authTab, setAuthTab] = useState<AuthTab>('login')
   const [name, setName] = useState(() => localStorage.getItem('student_name') || '')
   const [nameInput, setNameInput] = useState('')
+  const [passwordInput, setPasswordInput] = useState('')
+  const [confirmPasswordInput, setConfirmPasswordInput] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [loginError, setLoginError] = useState('')
-  const [viewingPrompt, setViewingPrompt] = useState<string | null>(null)
   const [challenge, setChallenge] = useState<ChallengeState | null>(null)
   const [hasActiveChallenge, setHasActiveChallenge] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null)
@@ -121,6 +80,16 @@ export default function StudentChat() {
   const [isDragging, setIsDragging] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [sessions, setSessions] = useState<StudentSession[]>([])
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // Change password modal state
+  const [pwModalOpen, setPwModalOpen] = useState(false)
+  const [pwCurrent, setPwCurrent] = useState('')
+  const [pwNew, setPwNew] = useState('')
+  const [pwConfirm, setPwConfirm] = useState('')
+  const [pwError, setPwError] = useState('')
+  const [pwLoading, setPwLoading] = useState(false)
 
   useEffect(() => {
     const prev = document.title
@@ -139,6 +108,10 @@ export default function StudentChat() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => {
+    if (sidebarOpen && stage === 'chatting') loadSessions()
+  }, [sidebarOpen])
+
   async function loadHistory(session_id?: number) {
     try {
       const res = await studentHistory(session_id)
@@ -155,13 +128,27 @@ export default function StudentChat() {
     }
   }
 
-  async function checkActiveChallenge() {
-    try {
+  async function checkActiveChallenge() {    try {
       const res = await getActiveChallenge()
       setHasActiveChallenge(!!res.data)
     } catch {
       // ignore
     }
+  }
+
+  async function loadSessions() {
+    try {
+      const res = await studentListSessions()
+      setSessions(res.data)
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleSelectSession(sessionId: number) {
+    setCurrentSessionId(sessionId)
+    setSidebarOpen(false)
+    await loadHistory(sessionId)
   }
 
   async function handleLogin() {
@@ -170,15 +157,68 @@ export default function StudentChat() {
     setLoginError('')
     setLoading(true)
     try {
-      const res = await studentLogin(trimmed)
+      const res = await studentLogin(trimmed, passwordInput || undefined)
       localStorage.setItem('student_token', res.data.access_token)
       localStorage.setItem('student_name', res.data.name)
       setName(res.data.name)
+      setPasswordInput('')
       setStage('chatting')
-    } catch {
-      setLoginError('登录失败，请重试')
+    } catch (err: any) {
+      setLoginError(err?.response?.data?.detail || '登录失败，请重试')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleRegister() {
+    const trimmed = nameInput.trim()
+    if (!trimmed) return
+    if (passwordInput.length < 6) {
+      setLoginError('密码至少需要 6 位')
+      return
+    }
+    if (passwordInput !== confirmPasswordInput) {
+      setLoginError('两次输入的密码不一致')
+      return
+    }
+    setLoginError('')
+    setLoading(true)
+    try {
+      const res = await studentRegister(trimmed, passwordInput)
+      localStorage.setItem('student_token', res.data.access_token)
+      localStorage.setItem('student_name', res.data.name)
+      setName(res.data.name)
+      setPasswordInput('')
+      setConfirmPasswordInput('')
+      setStage('chatting')
+    } catch (err: any) {
+      setLoginError(err?.response?.data?.detail || '注册失败，请重试')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleChangePassword() {
+    if (pwNew.length < 6) {
+      setPwError('新密码至少需要 6 位')
+      return
+    }
+    if (pwNew !== pwConfirm) {
+      setPwError('两次输入的密码不一致')
+      return
+    }
+    setPwError('')
+    setPwLoading(true)
+    try {
+      await studentChangePassword(pwCurrent, pwNew)
+      setPwModalOpen(false)
+      setPwCurrent('')
+      setPwNew('')
+      setPwConfirm('')
+    } catch (err: any) {
+      setPwError(err?.response?.data?.detail || '修改失败，请重试')
+    } finally {
+      setPwLoading(false)
     }
   }
 
@@ -291,12 +331,16 @@ export default function StudentChat() {
     localStorage.removeItem('student_name')
     setMessages([])
     setNameInput('')
+    setPasswordInput('')
+    setConfirmPasswordInput('')
     setName('')
     setChallenge(null)
     setHasActiveChallenge(false)
     setCurrentSessionId(null)
     setPendingFile(null)
     setFileError('')
+    setSessions([])
+    setSidebarOpen(false)
     setStage('unregistered')
   }
 
@@ -338,26 +382,57 @@ export default function StudentChat() {
   }
 
   if (stage === 'unregistered') {
+    const isLogin = authTab === 'login'
     return (
       <div style={styles.loginWrapper}>
         <div style={styles.loginCard}>
           <h2 style={styles.loginTitle}>ChAgent 课程助教</h2>
-          <p style={styles.loginSubtitle}>输入你的姓名开始对话</p>
+          <div style={styles.tabBar}>
+            <button
+              style={{ ...styles.tabBtn, ...(isLogin ? styles.tabBtnActive : {}) }}
+              onClick={() => { setAuthTab('login'); setLoginError('') }}
+            >
+              登录
+            </button>
+            <button
+              style={{ ...styles.tabBtn, ...(!isLogin ? styles.tabBtnActive : {}) }}
+              onClick={() => { setAuthTab('register'); setLoginError('') }}
+            >
+              注册
+            </button>
+          </div>
           <input
             style={styles.loginInput}
             placeholder="请输入姓名"
             value={nameInput}
             onChange={e => setNameInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleLogin()}
             autoFocus
           />
+          <input
+            style={styles.loginInput}
+            type="password"
+            placeholder={isLogin ? '请输入密码' : '请设置密码（至少 6 位）'}
+            value={passwordInput}
+            onChange={e => setPasswordInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && (isLogin ? handleLogin() : handleRegister())}
+          />
+          {!isLogin && (
+            <input
+              style={styles.loginInput}
+              type="password"
+              placeholder="再次输入密码"
+              value={confirmPasswordInput}
+              onChange={e => setConfirmPasswordInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleRegister()}
+            />
+          )}
           {loginError && <p style={styles.error}>{loginError}</p>}
           <button
             style={{ ...styles.loginBtn, opacity: loading ? 0.6 : 1 }}
-            onClick={handleLogin}
+            onClick={isLogin ? handleLogin : handleRegister}
             disabled={loading}
           >
-            {loading ? '登录中...' : '开始对话'}
+            {loading ? (isLogin ? '登录中...' : '注册中...') : (isLogin ? '登录' : '注册')}
           </button>
         </div>
       </div>
@@ -368,6 +443,42 @@ export default function StudentChat() {
 
   return (
     <>
+      {/* Session history sidebar */}
+      {sidebarOpen && !challenge && (
+        <>
+          <div style={sidebarStyles.backdrop} onClick={() => setSidebarOpen(false)} />
+          <div style={sidebarStyles.panel}>
+            <div style={sidebarStyles.header}>
+              <span style={sidebarStyles.title}>历史对话</span>
+              <button style={sidebarStyles.closeBtn} onClick={() => setSidebarOpen(false)}>✕</button>
+            </div>
+            <div style={sidebarStyles.list}>
+              {sessions.length === 0 ? (
+                <p style={sidebarStyles.empty}>暂无对话记录</p>
+              ) : sessions.map(s => (
+                <div
+                  key={s.id}
+                  style={{
+                    ...sidebarStyles.item,
+                    ...(s.id === currentSessionId ? sidebarStyles.itemActive : {}),
+                  }}
+                  onClick={() => handleSelectSession(s.id)}
+                >
+                  <div style={sidebarStyles.itemDate}>
+                    {formatSessionDate(s.started_at)}
+                    {s.mode === 'challenge' && <span style={sidebarStyles.modeBadge}>⚡挑战</span>}
+                  </div>
+                  {s.last_message && (
+                    <div style={sidebarStyles.itemPreview}>{s.last_message}</div>
+                  )}
+                  <div style={sidebarStyles.itemCount}>{s.message_count} 条消息</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
       <div
         style={{ ...styles.chatWrapper, ...(isDragging ? styles.chatWrapperDragging : {}) }}
         onDragOver={handleDragOver}
@@ -395,6 +506,9 @@ export default function StudentChat() {
             </>
           ) : (
             <>
+              <button style={styles.historyBtn} onClick={() => setSidebarOpen(o => !o)} title="查看历史对话">
+                📜 历史
+              </button>
               <button style={styles.newSessionBtn} onClick={handleNewSession} disabled={loading} title="清空当前对话，开启新会话">
                 + 新对话
               </button>
@@ -408,7 +522,8 @@ export default function StudentChat() {
               </button>
             </>
           )}
-          <button style={styles.switchBtn} onClick={handleSwitchName}>换个姓名</button>
+          <button style={styles.switchBtn} onClick={handleSwitchName}>换个账号</button>
+          <button style={styles.switchBtn} onClick={() => { setPwError(''); setPwModalOpen(true) }}>修改密码</button>
         </div>
 
         {/* Message list */}
@@ -433,15 +548,6 @@ export default function StudentChat() {
                     </ReactMarkdown>
                   )}
                 </div>
-                {msg.role === 'assistant' && msg.system_prompt && (
-                  <button
-                    style={styles.promptBtn}
-                    onClick={() => setViewingPrompt(msg.system_prompt!)}
-                    title="查看提交给模型的完整请求"
-                  >
-                    完整请求
-                  </button>
-                )}
                 {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
                   <CitationsPanel citations={msg.citations} />
                 )}
@@ -509,8 +615,53 @@ export default function StudentChat() {
         </div>
       </div>
 
-      {viewingPrompt && (
-        <SystemPromptModal prompt={viewingPrompt} onClose={() => setViewingPrompt(null)} />
+      {/* Change password modal */}
+      {pwModalOpen && (
+        <>
+          <div style={modalStyles.backdrop} onClick={() => setPwModalOpen(false)} />
+          <div style={modalStyles.box}>
+            <div style={modalStyles.header}>
+              <span style={modalStyles.title}>修改密码</span>
+              <button style={modalStyles.closeBtn} onClick={() => setPwModalOpen(false)}>✕</button>
+            </div>
+            <div style={modalStyles.body}>
+              <label style={modalStyles.label}>当前密码</label>
+              <input
+                style={modalStyles.input}
+                type="password"
+                placeholder="当前密码"
+                value={pwCurrent}
+                onChange={e => setPwCurrent(e.target.value)}
+                autoFocus
+              />
+              <label style={modalStyles.label}>新密码</label>
+              <input
+                style={modalStyles.input}
+                type="password"
+                placeholder="至少 6 位"
+                value={pwNew}
+                onChange={e => setPwNew(e.target.value)}
+              />
+              <label style={modalStyles.label}>确认新密码</label>
+              <input
+                style={modalStyles.input}
+                type="password"
+                placeholder="再次输入新密码"
+                value={pwConfirm}
+                onChange={e => setPwConfirm(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleChangePassword()}
+              />
+              {pwError && <p style={modalStyles.error}>{pwError}</p>}
+              <button
+                style={{ ...modalStyles.btn, opacity: pwLoading ? 0.6 : 1 }}
+                onClick={handleChangePassword}
+                disabled={pwLoading}
+              >
+                {pwLoading ? '修改中...' : '确认修改'}
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </>
   )
@@ -568,6 +719,9 @@ const styles: Record<string, React.CSSProperties> = {
   loginCard: { background: '#fff', borderRadius: 12, padding: '40px 48px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', width: 360, display: 'flex', flexDirection: 'column', gap: 16 },
   loginTitle: { margin: 0, fontSize: 24, fontWeight: 700, textAlign: 'center' },
   loginSubtitle: { margin: 0, color: '#666', textAlign: 'center', fontSize: 14 },
+  tabBar: { display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid #d9d9d9' },
+  tabBtn: { flex: 1, padding: '8px 0', fontSize: 14, fontWeight: 500, background: '#fff', border: 'none', cursor: 'pointer', color: '#666', transition: 'background 0.15s' },
+  tabBtnActive: { background: '#1677ff', color: '#fff' },
   loginInput: { padding: '10px 14px', fontSize: 15, border: '1px solid #d9d9d9', borderRadius: 8, outline: 'none' },
   loginBtn: { padding: '10px 0', fontSize: 15, background: '#1677ff', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
   error: { margin: 0, color: '#ff4d4f', fontSize: 13 },
@@ -579,6 +733,7 @@ const styles: Record<string, React.CSSProperties> = {
   headerName: { fontWeight: 600, fontSize: 16, marginRight: 4 },
   challengeBadge: { background: '#fff7e6', color: '#d46b08', border: '1px solid #ffd591', borderRadius: 12, padding: '2px 12px', fontSize: 13, fontWeight: 600 },
   newSessionBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
+  historyBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
   challengeBtn: { background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
   exitChallengeBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666' },
   switchBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666', marginLeft: 'auto' },
@@ -612,14 +767,36 @@ const citationStyles: Record<string, React.CSSProperties> = {
   itemText: { fontSize: 12, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
 }
 
+function formatSessionDate(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const modalStyles: Record<string, React.CSSProperties> = {
-  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  box: { background: '#fff', borderRadius: 12, width: '100%', maxWidth: 720, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 40px rgba(0,0,0,0.2)' },
+  backdrop: { position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.35)' },
+  box: { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 201, background: '#fff', borderRadius: 12, width: 340, boxShadow: '0 8px 32px rgba(0,0,0,0.18)' },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' },
-  title: { fontWeight: 700, fontSize: 15 },
+  title: { fontWeight: 600, fontSize: 16 },
   closeBtn: { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#888', lineHeight: 1 },
-  body: { overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 },
-  section: { display: 'flex', flexDirection: 'column', gap: 6 },
-  sectionTitle: { fontSize: 12, fontWeight: 600, color: '#1677ff', textTransform: 'uppercase', letterSpacing: 1 },
-  pre: { margin: 0, background: '#f6f8fa', borderRadius: 8, padding: '12px 14px', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#333', border: '1px solid #e8e8e8', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' },
+  body: { padding: '20px', display: 'flex', flexDirection: 'column', gap: 10 },
+  label: { fontSize: 13, color: '#555', fontWeight: 500 },
+  input: { padding: '9px 12px', fontSize: 14, border: '1px solid #d9d9d9', borderRadius: 7, outline: 'none' },
+  error: { margin: 0, color: '#ff4d4f', fontSize: 13 },
+  btn: { marginTop: 4, padding: '10px 0', fontSize: 15, background: '#1677ff', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
+}
+
+const sidebarStyles: Record<string, React.CSSProperties> = {
+  backdrop: { position: 'fixed', inset: 0, zIndex: 99, background: 'rgba(0,0,0,0.15)' },
+  panel: { position: 'fixed', left: 0, top: 0, width: 260, height: '100vh', background: '#fff', zIndex: 100, display: 'flex', flexDirection: 'column', boxShadow: '4px 0 16px rgba(0,0,0,0.12)' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 },
+  title: { fontWeight: 600, fontSize: 15 },
+  closeBtn: { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#888', lineHeight: 1 },
+  list: { flex: 1, overflowY: 'auto' },
+  empty: { textAlign: 'center', color: '#bbb', padding: '24px 16px', margin: 0, fontSize: 13 },
+  item: { padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', borderLeft: '3px solid transparent' },
+  itemActive: { background: '#e6f4ff', borderLeft: '3px solid #1677ff' },
+  itemDate: { fontSize: 12, color: '#888', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 },
+  itemPreview: { fontSize: 13, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 },
+  itemCount: { fontSize: 11, color: '#bbb' },
+  modeBadge: { background: '#fff7e6', color: '#d46b08', border: '1px solid #ffd591', borderRadius: 4, padding: '0 4px', fontSize: 11 },
 }

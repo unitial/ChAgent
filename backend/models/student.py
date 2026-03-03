@@ -9,6 +9,7 @@ class Student(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=True)
     feishu_user_id = Column(String, unique=True, index=True, nullable=True)
     profile_json = Column(
         JSON,
@@ -21,6 +22,7 @@ class Student(Base):
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+    profile_updated_at = Column(DateTime(timezone=True), nullable=True)
     daily_token_limit = Column(Integer, nullable=True)  # None = use global default; 0 = unlimited
 
     sessions = relationship("Session", back_populates="student", cascade="all, delete-orphan")

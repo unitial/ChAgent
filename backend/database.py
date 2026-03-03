@@ -50,6 +50,8 @@ def _migrate_sqlite() -> None:
         add_col("conversations", "output_tokens", "INTEGER NOT NULL DEFAULT 0")
         add_col("conversations", "system_prompt", "TEXT")
         add_col("students", "daily_token_limit", "INTEGER")
+        add_col("students", "profile_updated_at", "DATETIME")
+        add_col("students", "hashed_password", "TEXT")
         add_col("sessions", "mode", "VARCHAR(32)")
         add_col("sessions", "doc_path", "TEXT")
         add_col("sessions", "doc_media_type", "VARCHAR(64)")

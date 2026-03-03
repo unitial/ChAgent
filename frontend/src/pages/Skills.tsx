@@ -3,8 +3,8 @@ import {
   Table, Button, Space, Typography, Tag, Modal, Form,
   Input, Select, Switch, message, Popconfirm,
 } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
-import { getSkills, createSkill, updateSkill, deleteSkill, type Skill } from '../api'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import { getSkills, createSkill, updateSkill, deleteSkill, autofillSkill, type Skill } from '../api'
 import dayjs from 'dayjs'
 
 const TYPE_LABELS: Record<string, string> = {
@@ -32,6 +32,9 @@ export default function Skills() {
   const [saving, setSaving] = useState(false)
   const [filterType, setFilterType] = useState<string | undefined>(undefined)
   const [filterSource, setFilterSource] = useState<string | undefined>(undefined)
+  const [autofillOpen, setAutofillOpen] = useState(false)
+  const [autofillText, setAutofillText] = useState('')
+  const [autofilling, setAutofilling] = useState(false)
 
   const fetchSkills = () => {
     setLoading(true)
@@ -46,13 +49,31 @@ export default function Skills() {
     setEditingSkill(null)
     form.resetFields()
     form.setFieldsValue({ enabled: true })
+    setAutofillOpen(true)
+    setAutofillText('')
     setModalOpen(true)
   }
 
   const openEdit = (skill: Skill) => {
     setEditingSkill(skill)
     form.setFieldsValue(skill)
+    setAutofillOpen(false)
+    setAutofillText('')
     setModalOpen(true)
+  }
+
+  const handleAutofill = async () => {
+    if (!autofillText.trim()) return
+    setAutofilling(true)
+    try {
+      const res = await autofillSkill(autofillText)
+      form.setFieldsValue(res.data)
+      message.success('已自动填充，请检查并按需调整')
+    } catch {
+      message.error('自动填充失败，请重试')
+    } finally {
+      setAutofilling(false)
+    }
   }
 
   const handleSave = async () => {
@@ -204,6 +225,41 @@ export default function Skills() {
         confirmLoading={saving}
         width={640}
       >
+        {/* Auto-fill panel */}
+        <div style={{ marginBottom: 16, padding: 12, background: '#f6f9ff', borderRadius: 8, border: '1px solid #d6e4ff' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography.Text strong style={{ fontSize: 13, color: '#1677ff' }}>
+              <ThunderboltOutlined style={{ marginRight: 6 }} />
+              AI 自动填充
+            </Typography.Text>
+            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setAutofillOpen(o => !o)}>
+              {autofillOpen ? '收起' : '展开'}
+            </Button>
+          </div>
+          {autofillOpen && (
+            <div style={{ marginTop: 10 }}>
+              <Input.TextArea
+                rows={5}
+                placeholder="粘贴原始文本（讲义、论文、教材片段等），AI 将自动提取并填充下方字段"
+                value={autofillText}
+                onChange={e => setAutofillText(e.target.value)}
+                style={{ marginBottom: 8 }}
+              />
+              <Button
+                type="primary"
+                ghost
+                size="small"
+                icon={<ThunderboltOutlined />}
+                loading={autofilling}
+                disabled={!autofillText.trim()}
+                onClick={handleAutofill}
+              >
+                自动填充
+              </Button>
+            </div>
+          )}
+        </div>
+
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input placeholder="例：进程调度算法解析" />

@@ -76,3 +76,23 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: DBSession = Depe
 @router.get("/me", response_model=TeacherOut)
 def get_me(current_teacher: Teacher = Depends(get_current_teacher)):
     return current_teacher
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_teacher: Teacher = Depends(get_current_teacher),
+    db: DBSession = Depends(get_db),
+):
+    if not verify_password(payload.current_password, current_teacher.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码不正确")
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码至少需要 6 位")
+    current_teacher.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return {"ok": True}

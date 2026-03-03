@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip, Tag } from 'antd'
-import { EyeOutlined, ControlOutlined, SyncOutlined } from '@ant-design/icons'
+import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip, Tag, Badge, Dropdown } from 'antd'
+import { EyeOutlined, ControlOutlined, SyncOutlined, DownOutlined } from '@ant-design/icons'
 import {
   getStudents, setStudentLimit, getStudentConversations,
   triggerAllProfileUpdates, triggerStudentProfileUpdate,
+  getProfileUpdateStatus,
   type Student, type Conversation,
 } from '../api'
 import StudentProfileDrawer from '../components/StudentProfileDrawer'
@@ -17,6 +18,7 @@ export default function Students() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<{ total: number; needs_update: number } | null>(null)
 
   // Limit modal state
   const [limitStudent, setLimitStudent] = useState<Student | null>(null)
@@ -30,7 +32,16 @@ export default function Students() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(fetchStudents, [])
+  const fetchUpdateStatus = () => {
+    getProfileUpdateStatus()
+      .then((res) => setUpdateStatus(res.data))
+      .catch(() => {})
+  }
+
+  useEffect(() => {
+    fetchStudents()
+    fetchUpdateStatus()
+  }, [])
 
   const openDrawer = async (student: Student) => {
     setSelectedStudent(student)
@@ -44,11 +55,12 @@ export default function Students() {
     setLimitValue(student.daily_token_limit ?? null)
   }
 
-  const handleUpdateAll = async () => {
+  const handleUpdateAll = async (force = false) => {
     setUpdatingAll(true)
     try {
-      await triggerAllProfileUpdates()
-      message.success('所有学生画像更新任务已启动，稍后完成')
+      await triggerAllProfileUpdates(force)
+      message.success(force ? '强制更新全部画像任务已启动' : '智能更新画像任务已启动（仅更新有新对话的学生）')
+      fetchUpdateStatus()
     } catch {
       message.error('启动失败')
     } finally {
@@ -105,6 +117,21 @@ export default function Students() {
         }
         const style = record.profile_json?.learning_style
         return style ? <span>{style}</span> : <span style={{ color: '#bbb' }}>—</span>
+      },
+    },
+    {
+      title: '画像更新',
+      key: 'profile_updated',
+      width: 160,
+      render: (_: unknown, record: Student) => {
+        const timeText = record.profile_updated_at
+          ? dayjs(record.profile_updated_at).format('MM-DD HH:mm')
+          : '未更新'
+        return record.needs_profile_update ? (
+          <Badge color="orange" text={<span style={{ fontSize: 12 }}>{timeText}</span>} />
+        ) : (
+          <span style={{ fontSize: 12, color: '#888' }}>{timeText}</span>
+        )
       },
     },
     {
@@ -176,13 +203,29 @@ export default function Students() {
           学生管理
         </Typography.Title>
         <Space>
-          <Button
-            icon={<SyncOutlined spin={updatingAll} />}
+          <Dropdown.Button
+            icon={<DownOutlined />}
             loading={updatingAll}
-            onClick={handleUpdateAll}
+            onClick={() => handleUpdateAll(false)}
+            menu={{
+              items: [
+                {
+                  key: 'force',
+                  label: '强制更新全部',
+                  icon: <SyncOutlined />,
+                  onClick: () => handleUpdateAll(true),
+                },
+              ],
+            }}
           >
+            <SyncOutlined spin={updatingAll} />
             更新全部画像
-          </Button>
+            {updateStatus && updateStatus.needs_update > 0 && (
+              <Tag color="orange" style={{ marginLeft: 6, fontSize: 11 }}>
+                需更新 {updateStatus.needs_update} 人
+              </Tag>
+            )}
+          </Dropdown.Button>
           <Input.Search
             placeholder="搜索学生姓名"
             value={search}
