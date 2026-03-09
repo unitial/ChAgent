@@ -1,0 +1,1466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Case 19: 同一个内核，两块板子 — 交互式终端回放</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg-deep: #0d1117;
+      --bg-terminal: #161b22;
+      --bg-commentary: #1a1f2b;
+      --bg-control: #010409;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-dim: #484f58;
+      --accent-green: #3fb950;
+      --accent-blue: #58a6ff;
+      --accent-red: #f85149;
+      --accent-yellow: #d29922;
+      --border: #30363d;
+      --glass: rgba(22, 27, 34, 0.7);
+    }
+
+    body,
+    html {
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    .header {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      background: var(--bg-control);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .header-icon {
+      font-size: 18px;
+      margin-right: 12px;
+    }
+
+    .header-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .header-step-title {
+      margin-left: auto;
+      font-size: 14px;
+      color: var(--accent-blue);
+      font-weight: 600;
+    }
+
+    .main-panels {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ===== Terminal Panel ===== */
+    .terminal-panel {
+      flex: 1.1;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+      background: var(--bg-terminal);
+    }
+
+    .terminal-tab-bar {
+      display: flex;
+      align-items: flex-end;
+      padding: 0 16px;
+      height: 36px;
+      background: var(--bg-control);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-tab {
+      padding: 6px 16px;
+      background: var(--bg-terminal);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 6px 6px 0 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: relative;
+      top: 1px;
+    }
+
+    .terminal-tab .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green);
+    }
+
+    .terminal-content {
+      flex: 1;
+      padding: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-y: auto;
+      color: var(--text-primary);
+    }
+
+    .terminal-content::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .terminal-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .terminal-content::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    .term-line {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .term-prompt {
+      color: var(--accent-green);
+      font-weight: 700;
+    }
+
+    .term-command {
+      color: #f0f6fc;
+    }
+
+    .term-output {
+      color: var(--text-secondary);
+    }
+
+    .term-highlight {
+      color: var(--accent-yellow);
+      font-weight: 700;
+    }
+
+    .term-error {
+      color: var(--accent-red);
+      font-weight: 700;
+    }
+
+    .term-info {
+      color: var(--accent-blue);
+    }
+
+    .term-diff-add {
+      color: var(--accent-green);
+    }
+
+    .term-diff-del {
+      color: var(--accent-red);
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 15px;
+      background-color: var(--text-secondary);
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 1px;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .term-fade-in {
+      animation: termFadeIn 0.4s ease-out;
+    }
+
+    @keyframes termFadeIn {
+      from {
+        opacity: 0;
+      }
+
+      to {
+        opacity: 1;
+      }
+    }
+
+    /* ===== Commentary Panel ===== */
+    .commentary-panel {
+      flex: 1.15;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--border);
+      background: var(--bg-commentary);
+    }
+
+    .commentary-tab-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--bg-commentary);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .commentary-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+    }
+
+    .commentary-content::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .commentary-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .commentary-content::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    .comment-block {
+      margin-bottom: 20px;
+      padding: 16px 20px;
+      background: var(--glass);
+      border-radius: 10px;
+      border-left: 3px solid var(--border);
+      opacity: 0.15;
+      transition: opacity 0.5s ease, border-color 0.5s ease, transform 0.4s ease;
+      transform: translateY(4px) scale(0.98);
+    }
+
+    .comment-block.active {
+      opacity: 1;
+      border-left-color: var(--accent-blue);
+      transform: translateY(0) scale(1);
+    }
+
+    .comment-block.past {
+      opacity: 0.35;
+      border-left-color: var(--text-dim);
+      transform: translateY(0) scale(1);
+    }
+
+    .comment-step-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-blue);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .comment-block.past .comment-step-badge {
+      color: var(--text-dim);
+    }
+
+    .comment-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 10px;
+    }
+
+    .comment-body {
+      font-size: 14px;
+      line-height: 1.8;
+      color: #c9d1d9;
+    }
+
+    .comment-body p {
+      margin-bottom: 10px;
+    }
+
+    .comment-body strong {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .comment-body code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: rgba(110, 118, 129, 0.2);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent-yellow);
+    }
+
+    .comment-body .thinking {
+      color: var(--text-secondary);
+      font-style: italic;
+    }
+
+    .comment-body .dialogue {
+      display: block;
+      margin: 12px 0;
+      padding: 12px 14px 12px 42px;
+      background: rgba(210, 153, 34, 0.08);
+      border-left: 3px solid #d29922;
+      border-radius: 0 8px 8px 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      line-height: 1.6;
+      position: relative;
+    }
+
+    .comment-body .dialogue::before {
+      content: '\1F9D1\200D\1F527';
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      font-size: 16px;
+    }
+
+    .comment-body .dialogue .speaker {
+      font-weight: 700;
+      color: #d29922;
+    }
+
+    .comment-body .insight {
+      display: block;
+      margin: 10px 0;
+      padding: 10px 14px;
+      background: rgba(56, 139, 253, 0.08);
+      border-left: 3px solid var(--accent-blue);
+      border-radius: 0 6px 6px 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-style: normal;
+    }
+
+    .comment-body .warning {
+      display: block;
+      margin: 10px 0;
+      padding: 10px 14px;
+      background: rgba(248, 81, 73, 0.08);
+      border-left: 3px solid var(--accent-red);
+      border-radius: 0 6px 6px 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-style: normal;
+    }
+
+    .comment-body .conclusion {
+      display: block;
+      margin: 10px 0;
+      padding: 10px 14px;
+      background: rgba(63, 185, 80, 0.08);
+      border-left: 3px solid var(--accent-green);
+      border-radius: 0 6px 6px 0;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-style: normal;
+    }
+
+    /* Expandable Background Knowledge */
+    .comment-body details {
+      margin: 12px 0;
+      background: rgba(13, 17, 23, 0.5);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .comment-body summary {
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-blue);
+      cursor: pointer;
+      user-select: none;
+      background: rgba(255, 255, 255, 0.03);
+      transition: background 0.2s;
+      outline: none;
+    }
+
+    .comment-body summary:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .comment-body details[open] summary {
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .comment-body .details-content {
+      padding: 12px 14px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--text-secondary);
+      background: transparent;
+    }
+
+    /* ===== Chat Panel ===== */
+    .chat-panel {
+      flex: 0.75;
+      display: flex;
+      flex-direction: column;
+      min-width: 280px;
+      background: var(--bg-commentary);
+    }
+
+    .chat-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--bg-commentary);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: var(--glass);
+    }
+
+    .chat-messages::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .chat-messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .chat-messages::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    .chat-msg {
+      display: flex;
+      flex-direction: column;
+      max-width: 90%;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .chat-msg.user {
+      align-self: flex-end;
+    }
+
+    .chat-msg.ai {
+      align-self: flex-start;
+    }
+
+    .chat-bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+    }
+
+    .chat-msg.user .chat-bubble {
+      background: var(--accent-blue);
+      color: #fff;
+      border-bottom-right-radius: 2px;
+    }
+
+    .chat-msg.ai .chat-bubble {
+      background: var(--bg-terminal);
+      color: var(--text-primary);
+      border-bottom-left-radius: 2px;
+      border: 1px solid var(--border);
+    }
+
+    /* ===== Markdown inside chat bubbles ===== */
+    .chat-bubble h1,
+    .chat-bubble h2,
+    .chat-bubble h3,
+    .chat-bubble h4,
+    .chat-bubble h5,
+    .chat-bubble h6 {
+      margin: 8px 0 4px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .chat-bubble h1 {
+      font-size: 16px;
+    }
+
+    .chat-bubble h2 {
+      font-size: 15px;
+    }
+
+    .chat-bubble p {
+      margin: 4px 0;
+      line-height: 1.6;
+    }
+
+    .chat-bubble ul,
+    .chat-bubble ol {
+      margin: 4px 0 4px 18px;
+      padding: 0;
+    }
+
+    .chat-bubble li {
+      margin: 2px 0;
+      line-height: 1.5;
+    }
+
+    .chat-bubble code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: rgba(110, 118, 129, 0.25);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--accent-yellow);
+    }
+
+    .chat-bubble pre {
+      margin: 6px 0;
+      padding: 10px 12px;
+      background: var(--bg-deep);
+      border-radius: 6px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+    }
+
+    .chat-bubble pre code {
+      background: none;
+      padding: 0;
+      color: var(--text-primary);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .chat-bubble blockquote {
+      margin: 6px 0;
+      padding: 6px 12px;
+      border-left: 3px solid var(--accent-blue);
+      background: rgba(88, 166, 255, 0.06);
+      color: var(--text-secondary);
+      border-radius: 0 4px 4px 0;
+    }
+
+    .chat-bubble table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 6px 0;
+      font-size: 12px;
+    }
+
+    .chat-bubble th,
+    .chat-bubble td {
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      text-align: left;
+    }
+
+    .chat-bubble th {
+      background: rgba(110, 118, 129, 0.15);
+      font-weight: 600;
+    }
+
+    .chat-bubble strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .chat-bubble a {
+      color: var(--accent-blue);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .chat-input-area {
+      padding: 12px;
+      background: var(--bg-commentary);
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+
+    .chat-input {
+      flex: 1;
+      background: var(--bg-terminal);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      outline: none;
+      font-family: inherit;
+    }
+
+    .chat-input:focus {
+      border-color: var(--accent-blue);
+    }
+
+    .chat-send-btn {
+      background: var(--accent-blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      width: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    .chat-send-btn:hover {
+      opacity: 0.8;
+    }
+
+    .chat-link {
+      color: var(--accent-yellow);
+      cursor: pointer;
+      text-decoration: underline dashed;
+      text-underline-offset: 4px;
+      font-weight: 500;
+      transition: opacity 0.2s;
+    }
+
+    .chat-link:hover {
+      opacity: 0.8;
+    }
+
+    /* typing indicator */
+    .typing-dots {
+      display: flex;
+      gap: 4px;
+      padding: 4px 2px;
+    }
+
+    .typing-dots span {
+      width: 6px;
+      height: 6px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      animation: typing 1.4s infinite ease-in-out both;
+    }
+
+    .typing-dots span:nth-child(1) {
+      animation-delay: -0.32s;
+    }
+
+    .typing-dots span:nth-child(2) {
+      animation-delay: -0.16s;
+    }
+
+    @keyframes typing {
+
+      0%,
+      80%,
+      100% {
+        transform: scale(0);
+      }
+
+      40% {
+        transform: scale(1);
+      }
+    }
+
+    /* ===== Control Bar ===== */
+    .control-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      background: var(--bg-control);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .ctrl-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 16px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      user-select: none;
+    }
+
+    .ctrl-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .ctrl-btn:active {
+      transform: scale(0.92);
+    }
+
+    .ctrl-btn.play-btn {
+      width: 44px;
+      height: 44px;
+      background: var(--accent-green);
+      border-color: var(--accent-green);
+      color: #000;
+      font-size: 18px;
+      border-radius: 50%;
+    }
+
+    .ctrl-btn.play-btn:hover {
+      background: #46d160;
+    }
+
+    .progress-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+      border-radius: 3px;
+      transition: width 0.3s;
+      position: relative;
+    }
+
+    .progress-fill::after {
+      content: '';
+      position: absolute;
+      right: -6px;
+      top: -5px;
+      width: 16px;
+      height: 16px;
+      background: var(--accent-blue);
+      border-radius: 50%;
+      border: 2px solid var(--bg-control);
+      box-shadow: 0 0 8px rgba(88, 166, 255, 0.4);
+    }
+
+    .progress-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      min-width: 80px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .speed-btn {
+      padding: 4px 10px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: 'JetBrains Mono', monospace;
+      transition: all 0.2s;
+    }
+
+    .speed-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-blue);
+    }
+
+    .shortcuts-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      display: flex;
+      gap: 8px;
+    }
+
+    .shortcuts-hint kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+    }
+
+    /* ===== Splash ===== */
+    .splash-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      transition: opacity 0.5s;
+    }
+
+    .splash-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .hardware-photo {
+      width: 100%;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    .splash-card {
+      text-align: center;
+      max-width: 530px;
+      padding: 30px;
+    }
+
+    .splash-card h1 {
+      font-size: 26px;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .splash-card p {
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 24px;
+      font-size: 15px;
+    }
+
+    .splash-start-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 32px;
+      background: var(--accent-green);
+      color: #000;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.2s;
+    }
+
+    .splash-start-btn:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 30px rgba(63, 185, 80, 0.3);
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Splash Screen -->
+  <div class="splash-overlay" id="splash">
+    <div class="splash-card">
+      <img src="hardware_setup.png" class="hardware-photo" alt="真实硬件连接图">
+      <h1>Case 19: 同一个内核，两块板子</h1>
+      <p>嵌入式内核排障全真模拟推演。<br>跟随资深工程师的视角，一步步揭发底层系统命案真相。</p>
+      <button class="splash-start-btn" onclick="startPlayback()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M8 5v14l11-7z" />
+        </svg>
+        开始观看
+      </button>
+    </div>
+  </div>
+
+  <div class="app">
+    <header class="header">
+      <span class="header-icon">🔍</span>
+      <span class="header-title">Case 19: 同一个内核，两块板子</span>
+      <span class="header-step-title" id="headerStep"></span>
+    </header>
+
+    <div class="main-panels">
+      <div class="terminal-panel">
+        <div class="terminal-tab-bar">
+          <div class="terminal-tab"><span class="dot"></span>Terminal</div>
+        </div>
+        <div class="terminal-content" id="terminal"></div>
+      </div>
+
+      <div class="commentary-panel">
+        <div class="commentary-tab-bar">💬 思考过程</div>
+        <div class="commentary-content" id="commentary"></div>
+      </div>
+
+      <div class="chat-panel">
+        <div class="chat-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span>AI 助教答疑</span>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg ai">
+            <div class="chat-bubble">
+              你好！我是这节课的 AI 助教。在阅读左侧时，点击带有虚线的<span class="chat-link"
+                style="text-decoration:none">高亮关键词</span>，或者直接在下方输入框向我提问，我会为你深入解答底层原理。
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <input type="text" class="chat-input" id="chatInput" placeholder="输入你想了解的内容..." autocomplete="off"
+            onkeypress="handleChatKeyPress(event)">
+          <button class="chat-send-btn" onclick="sendChatMessage()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div> <!-- /main-panels -->
+
+    <div class="control-bar">
+      <button class="ctrl-btn" onclick="player.prevStep()" title="上一步 (←)">⏮</button>
+      <button class="ctrl-btn play-btn" id="playBtn" onclick="player.togglePlay()" title="播放/暂停 (Space)">▶</button>
+      <button class="ctrl-btn" onclick="player.nextStep()" title="下一步 (→)">⏭</button>
+      <div class="progress-container">
+        <div class="progress-bar" id="progressBar" onclick="player.seekFromClick(event)">
+          <div class="progress-fill" id="progressFill" style="width:0%"></div>
+        </div>
+        <span class="progress-label" id="progressLabel">0 / 0</span>
+      </div>
+      <button class="speed-btn" id="speedBtn" onclick="player.cycleSpeed()">1x</button>
+      <div class="shortcuts-hint">
+        <span><kbd>Space</kbd> 播放</span>
+        <span><kbd>←</kbd><kbd>→</kbd> 切换</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Chat history for context
+    const chatHistory = [];
+
+    function getCurrentStepContext() {
+      if (typeof player !== 'undefined' && player.currentStep >= 0 && player.currentStep < STEPS.length) {
+        const step = STEPS[player.currentStep];
+        return `步骤 ${player.currentStep + 1}: ${step.title}\n\n${step.commentary.replace(/<[^>]*>/g, '')}`;
+      }
+      return '';
+    }
+
+    function sendChatMessage(textOverride) {
+      const input = document.getElementById('chatInput');
+      const text = textOverride || input.value.trim();
+      if (!text) return;
+
+      appendMessage('user', text);
+      chatHistory.push({ role: 'user', content: text });
+      if (!textOverride) input.value = '';
+      showTypingIndicator();
+      callCaseChat(text);
+    }
+
+    async function callCaseChat(query) {
+      const slug = (typeof CASE_SLUG !== 'undefined') ? CASE_SLUG : '';
+      const studentToken = localStorage.getItem('student_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (studentToken) headers['Authorization'] = `Bearer ${studentToken}`;
+
+      try {
+        const resp = await fetch(`/api/cases/${slug}/chat`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            message: query,
+            context: getCurrentStepContext(),
+            history: chatHistory.slice(-10)
+          })
+        });
+        if (!resp.ok) throw new Error('API error');
+        const data = await resp.json();
+        const reply = data.reply || '抱歉，暂时无法回答，请稍后重试。';
+        chatHistory.push({ role: 'assistant', content: reply });
+        appendMessage('ai', reply);
+      } catch (e) {
+        appendMessage('ai', '网络错误，请检查连接后重试。');
+      }
+    }
+
+    function handleChatKeyPress(e) {
+      if (e.key === 'Enter') sendChatMessage();
+    }
+
+    function appendMessage(role, text) {
+      const container = document.getElementById('chatMessages');
+      const typing = document.getElementById('typingIndicator');
+      if (typing) typing.remove();
+
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `chat-msg ${role}`;
+      if (role === 'ai' && typeof marked !== 'undefined') {
+        msgDiv.innerHTML = `<div class="chat-bubble">${marked.parse(text)}</div>`;
+      } else {
+        msgDiv.innerHTML = `<div class="chat-bubble">${text.replace(/\\n/g, '<br>')}</div>`;
+      }
+      container.appendChild(msgDiv);
+      container.scrollTop = container.scrollHeight;
+      return msgDiv;
+    }
+
+    function showTypingIndicator() {
+      const container = document.getElementById('chatMessages');
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `chat-msg ai`;
+      msgDiv.id = 'typingIndicator';
+      msgDiv.innerHTML = `<div class="chat-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
+      container.appendChild(msgDiv);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function setupChatLinks() {
+      document.querySelectorAll('.chat-link:not([data-bound])').forEach(link => {
+        link.dataset.bound = 'true';
+        link.addEventListener('click', (e) => {
+          const keyword = e.target.innerText;
+          sendChatMessage(`请详细解释一下：${keyword}`);
+        });
+      });
+    }
+
+    const STEPS = [
+      {
+        title: "📎 故事背景 (硬件环境)",
+        terminal: {
+          prompt: "$ ",
+          command: "picocom -b 115200 /dev/ttyUSB0",
+          output: "picocom v3.1\nport is        : /dev/ttyUSB0\nflowcontrol    : none\nbaudrate is    : 115200\nTerminal ready"
+        },
+        commentary: `<img src="hardware_setup.png" class="hardware-photo" alt="真实硬件连接环境">
+<p>我们团队的 IoT 网关产品一直跑在一块 Cortex-A53 开发板（代号"旧板"）上，稳得一匹。</p>
+<p>上周硬件组换了供应商，来了一批新的 Cortex-A72 板子（代号"新板"），性能更强、价格更低。新板出厂时 SPI Flash 里已经烧好了适配本板的底层固件（<span class="chat-link">U-Boot</span>），只需要从 SD 卡引导 Linux 内核和根文件系统。</p>
+<p class="dialogue"><span class="speaker">主管：</span>“内核和文件系统是通用的 ARM64 <span class="chat-link">架构</span>，直接把旧板的 SD 卡插过去就行。”</p>
+<p>我把 SD 卡从旧板拔下来，插到新板上，接好串口线（USB-TTL 转接器连到新板的 UART0 排针），打开终端准备看它顺利启动。</p>`
+      },
+      {
+        title: "⚡ 新板上电测试：沉默的内核",
+        terminal: {
+          prompt: "", command: "",
+          output: "U-Boot 2024.01 (Board v3 - A72)\n\nDRAM:  2 GiB\nMMC:   mmc@fe320000: 0\nLoading Environment from FAT... OK\nHit any key to stop autoboot:  0\n## Reading Image from mmc 0:1 to 0x40200000 ... OK\n## Reading board.dtb from mmc 0:1 to 0x48000000 ... OK\n   Booting using the fdt blob at 0x48000000\n   Loading Device Tree to 0000000049ff8000, end 0000000049fff47a ... OK\n\nStarting kernel ...\n\n"
+        },
+        commentary: `<p><strong>上电。</strong></p>
+<p>这次新板自带的 <span class="chat-link">U-Boot</span> 正常启动了——它读取了 SD 卡上的内核和设备树，一切看起来很顺利。</p>
+<p class="warning">然后——光标停在了 <code>Starting kernel ...</code> 之后。</p>
+<p class="thinking">等了 30 秒，没有一行内核日志。<br>等了 60 秒，依然沉默。</p>`
+      },
+      {
+        title: "🔄 交叉验证：插回旧板",
+        terminal: {
+          prompt: "", command: "",
+          output: "U-Boot 2024.01 (Board v2 - A53)\n\nDRAM:  1 GiB\nMMC:   mmc@1c0f000: 0\nLoading Environment from FAT... OK\n## Reading Image from mmc 0:1 to 0x40200000 ... OK\n## Reading board.dtb from mmc 0:1 to 0x48000000 ... OK\n   Booting using the fdt blob at 0x48000000\n\nStarting kernel ...\n\n[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd034]\n[    0.000000] Linux version 6.1.80 (builder@ci) (aarch64-linux-gnu-gcc 12.2)\n[    0.000000] Machine model: IoT Gateway Board v2 (A53)\n[    0.000000] earlycon: uart0 at MMIO 0x01c28000 (options '115200n8')\n[    0.527000] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled\n[    0.533000] 1c28000.serial: ttyS0 at MMIO 0x1c28000 (irq = 30, base_baud = 1500000) is a 16550A\n...\n[    2.841000] Run /sbin/init as init process\n\nWelcome to Alpine Linux 3.19\ngateway login: _"
+        },
+        commentary: `<p>把同一张 SD 卡拔回旧板，接上串口，上电——<strong>旧板的串口立刻吐出完整启动流程，4 秒完美启动。</strong></p>
+<p class="thinking">SD 卡再插回新板——U-Boot 正常，但内核死寂。反复三次，结果一样：</p>
+<p><strong>✅ 旧板：4秒启动<br>❌ 新板：U-Boot 过了，内核死了</strong></p>
+<p class="insight">💡 同一个内核、同一个 rootfs、同一张 SD 卡、同一根串口线。U-Boot 阶段两块板子都正常。差异出在 <strong><code>Starting kernel ...</code> 之后</strong>——内核拿到了控制权，但不说话了。</p>
+<p><strong>第一步：排除物理层问题。</strong><br>
+串口线接错了？不可能——U-Boot 阶段的输出证明串口线是通的。<span class="chat-link">波特率</span>错了？也不可能——U-Boot 和内核用的是同一个串口、同一个波特率 115200。</p>
+<p class="conclusion">🎯 <strong>问题被精确锁定在：内核启动的某个环节出了故障。</strong></p>`
+      },
+      {
+        title: "🔌 第二步：确认内核状态——请出 JTAG",
+        terminal: {
+          prompt: "$ ", command: "openocd -f interface/jlink.cfg -f target/aarch64.cfg",
+          output: "Open On-Chip Debugger 0.12.0\nLicensed under GNU GPL v2\nInfo : J-Link V11 connected\nInfo : JTAG tap: aarch64.cpu tap/device found: 0x4ba00477\nInfo : aarch64.cpu: hardware has 6 breakpoints, 4 watchpoints\nInfo : starting gdb server for aarch64.cpu on port 3333\nInfo : Listening on port 3333 for gdb connections"
+        },
+        commentary: `<img src="hardware_after_jtag.png" class="hardware-photo" alt="连接了 J-Link 调试器">
+<p><code>Starting kernel ...</code> 之后串口哑了，但这不等于内核挂了——也可能是内核在跑，只是串口驱动初始化失败了，内核“说不出话来”。要知道内核的真实状态，需要一种不依赖串口的调试手段——<strong><span class="chat-link">JTAG</span> 调试器。</strong></p>
+<p class="thinking">串口是 CPU“主动说话”——得内核初始化串口驱动后才能输出。JTAG 是我们“强行读心”——不需要目标系统有任何软件支持，直接通过硬件调试接口读写 CPU 寄存器和内存。</p>
+<p class="dialogue"><span class="speaker">我：</span>“老王，借你的 Segger J-Link 用用。”</p>
+<p>我找硬件工程师老王借来调试器，连上新板的 JTAG 接口（20-pin 排针），启动 OpenOCD。</p>
+<p><code>tap/device found: 0x4ba00477</code> —— JTAG 识别到了 CPU！芯片活着。</p>`
+      },
+      {
+        title: "🐛 挂载 GDB 查验现场",
+        terminal: {
+          prompt: "$ ", command: "aarch64-linux-gnu-gdb\n(gdb) target remote :3333\n(gdb) info reg pc cpsr",
+          output: "Remote debugging using :3333\n0xffff800008084a20 in ?? ()\n\npc             0xffff800008084a20  0xffff800008084a20\ncpsr           0x600003c5          1610613701"
+        },
+        commentary: `<p>老王在旁边打开了另一个终端，用 GDB 连上去，先暂停 CPU 再看寄存器。</p>
+<p class="thinking">注意看着 PC（程序计数器）的值 <code>0xffff800008084a20</code> —— 这是内核的高位虚拟地址，说明不仅进了内核，而且 <span class="chat-link">MMU</span> 都开了！</p>`
+      },
+      {
+        title: "🛡️ 分析 CurrentEL 与虚拟内存状态",
+        terminal: {
+          prompt: "(gdb) ", command: "p/x $CurrentEL",
+          output: "$1 = 0x4"
+        },
+        commentary: `<p class="dialogue"><span class="speaker">老王看了一眼就说：</span>“<code>CurrentEL = 0x4</code>，说明 CPU 运行在 <span class="chat-link">EL1</span>。再看 PC 在 <code>0xffff800008084a20</code>——这是内核的虚拟地址空间，说明不仅进了内核，而且 MMU 都开了，跑得很远了。”</p>
+<p class="insight">💡 <strong>跑得很远了——只是我们在串口上看不到任何输出。</strong></p>
+<details>
+  <summary>📚 深入理解：异常级别与启动链</summary>
+  <div class="details-content">
+    ARM64 有四个特权等级：EL3 (安全固件), EL2 (Hypervisor), EL1 (操作系统内核), EL0 (用户程序)。EL1 = 二进制 <code>01</code>，左移两位就是 <code>0b0100 = 0x4</code>。<br>
+    刚启动时 MMU 是关闭的，PC 会指向物理加载地址。现在 PC 已经是 <code>0xffff...</code> 打头的高位虚拟地址，说明内核早完成了底层的初始化并且开启了 MMU 内存管理，成功跨入了 C 语言执行环境。
+  </div>
+</details>`
+      },
+      {
+        title: "📜 第三步：读内核日志缓冲区——提取系统遗言",
+        terminal: {
+          prompt: "(gdb) ", command: "source vmlinux-gdb.py\n(gdb) lx-dmesg",
+          output: "[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]\n[    0.000000] Linux version 6.1.80\n[    0.000000] earlycon: uart0 at MMIO 0x01c28000 (options '115200n8')\n......\n[    0.527000] Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled\n[    0.533000] 1c28000.serial: ttyS0 at MMIO 0x1c28000 (irq = 30) is a 16550A\n[    0.535000] Unhandled fault at 0x1c28000: synchronous external abort (0x96000010)\n[    0.535001] Internal error: : 96000010 [#1] PREEMPT SMP\n[    0.535002] Kernel panic - not syncing: Fatal exception"
+        },
+        commentary: `<p class="dialogue"><span class="speaker">老王教了我一个关键技巧：</span>“<code>printk()</code> 的核心落点是内核日志缓冲区（<code>log_buf</code>）；控制台驱动再决定哪些日志被立即输出到串口或其他控制台。因此，<strong>即使串口控制台初始化失败，内存中的日志缓冲区往往仍保留着关键线索</strong>——就算嘴巴哑了，脑子里的想法还在。”</p>
+<p>我们用 JTAG 直接读日志缓冲区。老王用内核自带的 GDB 扩展脚本宏 <span class="chat-link">lx-dmesg</span> 导出了完整的诊断日志！</p>
+<p class="warning">🔥 <strong>找到了！最后三行是致命线索：</strong><br>
+1. <strong><code>... at MMIO 0x1c28000 ... is a 16550A</code></strong> —— 内核试图在地址 <code>0x1c28000</code> 初始化一个 16550 兼容串口。<br>
+2. <strong><code>Unhandled fault ... synchronous external abort</code></strong> —— 但那个地址在新板上什么都没有！触发了硬件级同步 <span class="chat-link">External Abort</span>。<br>
+3. <strong><code>Kernel <span class="chat-link">Panic</span> ...</code></strong> —— 内核直接崩溃了。</p>
+<p class="thinking">内核在地址 <code>0x1c28000</code> 去初始化串口——但这分明是<strong>旧板</strong>的串口地址！</p>`
+      },
+      {
+        title: "🔍 定位真凶：反编译死机名录",
+        terminal: {
+          prompt: "$ ", command: "sudo mount /dev/sdb1 /mnt/sdcard\n$ dtc -I dtb -O dts /mnt/sdcard/board.dtb > old-board.dts\n$ grep -A8 \"serial@\" old-board.dts",
+          output: "serial@1c28000 {\n    compatible = \"snps,dw-apb-uart\";\n    reg = <0x00 0x1c28000 0x00 0x400>;\n    interrupts = <0x00 0x00 0x04>;\n    reg-shift = <2>;\n    reg-io-width = <4>;\n    clock-frequency = <0x16e3600>;   /* 24 MHz */\n    status = \"okay\";\n};"
+        },
+        commentary: `<p class="thinking">新板的串口在哪？内核怎么知道串口在 <code>0x1c28000</code> 这个老地址的？</p>
+<p>内核不是硬编码的，它是依靠读取 <strong><span class="chat-link">设备树</span> (DTB)</strong> 这个配置文件来获知一切硬件的位置的。</p>
+<p>我把 SD 卡插回电脑，挂载 boot 分区，用 <code>dtc</code> 反编译 SD 卡上遗留着的 <code>.dtb</code> 文件。一看便全明白了。</p>
+<p>翻开新板的硬件参考手册对照：<br>
+<strong>旧板设备树指定：</strong>Synopsys DesignWare UART（16550 兼容，地址 <code>0x1c28000</code>）<br>
+<strong>新板实际接线为：</strong>ARM PL011 UART（全新的驱动芯片，地址在 <code>0x09000000</code>）</p>
+<p class="conclusion">🎯 <strong>结论：内核拿着旧板的设备树，跑到地址 <code>0x1c28000</code> 去操作一个不存在的设备。ARM 总线对此不留情面，触发异常，内核直接暴毙。<br>在 ARM 的世界里，同一个内核镜像可以跑在一万种板子上，但每块板子必须有自己的硬件说明书。把旧板的说明书给新板，就像拿着北京的地铁图去上海找地铁站，注定死路一条。</strong></p>`
+      },
+      {
+        title: "✍️ 补丁修复：打通新的设备挂载路线",
+        terminal: {
+          prompt: "$ ", command: "diff old.dts new.dts\n$ dtc -I dts -O dtb -o new-board.dtb new-board.dts\n$ sudo cp new-board.dtb /mnt/sdcard/board.dtb\n$ sudo sync && sudo umount /mnt/sdcard",
+          output: "-   serial@1c28000 {\n-       compatible = \"snps,dw-apb-uart\";\n-       reg = <0x00 0x1c28000 0x00 0x400>;\n+   serial@9000000 {\n+       compatible = \"arm,pl011\", \"arm,primecell\";\n+       reg = <0x00 0x9000000 0x00 0x1000>;\n    };\n\n(执行覆盖替换 DTB 到 SD 卡...)"
+        },
+        commentary: `<p>修复分三步：</p>
+<p><strong>第一步</strong>：基于旧板的 <code>.dts</code>，修改串口节点适配新板硬件。将引脚改为新板真实的 <code>0x9000000</code>，并把驱动标识 <span class="chat-link">Compatible</span> 字符串变更为能让内核查找装载 PL011 驱动的 <code>"arm,pl011"</code>。<br>
+<strong>第二步</strong>：利用 <code>dtc</code> 编译成新的二进制硬件词典设备树档案。<br>
+<strong>第三步</strong>：SD 卡插回新板，上电，死死盯住 picocom 终端界面！</p>`
+      },
+      {
+        title: "🚀 新纪元：顺畅放行，系统活了",
+        terminal: {
+          prompt: "$ ", command: "picocom -b 115200 /dev/ttyUSB0",
+          output: "Terminal ready\n\nU-Boot 2024.01 (Board v3 - A72)\n...\n[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]\n[    0.000000] Machine model: IoT Gateway Board v3 (A72)\n[    0.532000] Serial: AMBA PL011 UART driver\n[    0.536000] 9000000.serial: ttyAMA0 at MMIO 0x9000000 (irq = 36) is a PL011 rev3\n[    0.540000] printk: console [ttyAMA0] enabled\n...\n[    2.103000] Run /sbin/init as init process\n\nWelcome to Alpine Linux 3.19\ngateway login: _"
+        },
+        commentary: `<p><strong>终于！同一个内核镜像，只换了一个 12KB 的 <code>.dtb</code> 文件，新板就活了。</strong></p>
+<p>注意日志中的关键对比——同一个内核，根据设备树自动选择了完全不同的硬件驱动：更换后的串口挂载节点自动改为了 <code>Serial: AMBA PL011 UART driver... 9000000.serial: ttyAMA0</code>。</p>
+<p class="conclusion">🏆 <strong>战后总结：</strong><br>
+1. <strong>“同一个内核”不等于“同一份配置”</strong>：内核是通用的，设备树是板级的——搞混了就是 panic。<br>
+2. <strong>理解异常级别</strong>：借助 JTAG，在串口完全无输出时直接读取 CPU 寄存器和内存，最终把问题定位到内核/设备树这一层。<br>
+3. <strong>理解整个系统栈</strong>：设备树就是这样把“通用内核”和“特定硬件”粘合在一起的。一个 <code>.dtb</code> 的错误就能让整条链断裂。</p>`
+      }
+    ];
+
+    class TerminalPlayer {
+      constructor(steps) {
+        this.steps = steps;
+        this.currentStep = -1;
+        this.isPlaying = false;
+        this.speed = 1;
+        this.speeds = [0.5, 1, 2, 4];
+        this.speedIdx = 1;
+        this.typeTimer = null;
+        this.pendingTimers = [];
+        this.termEl = document.getElementById('terminal');
+        this.commEl = document.getElementById('commentary');
+        this.playBtn = document.getElementById('playBtn');
+        this.progressFill = document.getElementById('progressFill');
+        this.progressLabel = document.getElementById('progressLabel');
+        this.speedBtn = document.getElementById('speedBtn');
+        this.headerStep = document.getElementById('headerStep');
+
+        this.buildCommentary();
+        this.updateProgress();
+        setTimeout(setupChatLinks, 100);
+      }
+
+      buildCommentary() {
+        this.commEl.innerHTML = this.steps.map((s, i) =>
+          `<div class="comment-block" id="comment-${i}">
+        <div class="comment-step-badge">步骤 ${i + 1} / ${this.steps.length}</div>
+        <div class="comment-title">${s.title}</div>
+        <div class="comment-body">${s.commentary}</div>
+      </div>`
+        ).join('');
+      }
+
+      updateProgress() {
+        const total = this.steps.length;
+        const current = this.currentStep + 1;
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        this.progressFill.style.width = pct + '%';
+        this.progressLabel.textContent = `${current} / ${total}`;
+      }
+
+      updatePlayBtn() {
+        this.playBtn.textContent = this.isPlaying ? '⏸' : '▶';
+        this.playBtn.style.boxShadow = this.isPlaying ? '0 0 15px rgba(63,185,80,0.6)' : 'none';
+      }
+
+      highlightComment(idx) {
+        this.steps.forEach((_, i) => {
+          const el = document.getElementById(`comment-${i}`);
+          el.classList.remove('active', 'past');
+          if (i === idx) el.classList.add('active');
+          else if (i < idx) el.classList.add('past');
+        });
+        if (idx >= 0) {
+          const el = document.getElementById(`comment-${idx}`);
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+
+      clearTimers() {
+        clearTimeout(this.typeTimer);
+        this.pendingTimers.forEach(t => clearTimeout(t));
+        this.pendingTimers = [];
+      }
+
+      delay(ms) {
+        return new Promise(resolve => {
+          const t = setTimeout(resolve, ms / this.speed);
+          this.pendingTimers.push(t);
+        });
+      }
+
+      async typeText(text, container, charDelay, className) {
+        return new Promise(resolve => {
+          let i = 0;
+          const span = document.createElement('span');
+          span.className = className;
+          container.appendChild(span);
+          const cursor = document.createElement('span');
+          cursor.className = 'cursor';
+          container.appendChild(cursor);
+
+          const type = () => {
+            if (i < text.length) {
+              span.textContent += text[i]; i++;
+              this.termEl.scrollTop = this.termEl.scrollHeight;
+              this.typeTimer = setTimeout(type, charDelay / this.speed);
+            } else {
+              cursor.remove();
+              resolve();
+            }
+          };
+          type();
+        });
+      }
+
+      colorClass(line) {
+        if (line.includes('Error') || line.includes('panic') || line.includes('fault') || line.includes('Unhandled')) return 'term-error';
+        if (line.startsWith('+')) return 'term-diff-add';
+        if (line.startsWith('-')) return 'term-diff-del';
+        if (line.includes('Info :') || line.includes('OK') || line.includes('connected') || line.includes('Terminal ready')) return 'term-info';
+        if (line.includes('Starting kernel') || line.includes('Welcome to') || line.includes('login:') || line.includes('Serial:') || line.includes('ttyAMA0') || line.includes('ttyS0')) return 'term-highlight';
+        return 'term-output';
+      }
+
+      appendOutput(text) {
+        if (!text) return;
+        text.split('\\n').forEach(line => {
+          const div = document.createElement('div');
+          div.className = 'term-line';
+          const span = document.createElement('span');
+          span.className = this.colorClass(line);
+          span.textContent = line;
+          div.appendChild(span);
+          this.termEl.appendChild(div);
+        });
+        this.termEl.scrollTop = this.termEl.scrollHeight;
+      }
+
+      renderTerminal(step, animated) {
+        this.termEl.innerHTML = '';
+        if (!step.terminal) {
+          this.termEl.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-family:Inter,sans-serif;font-size:14px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">💬</div>阅读右侧思考过程</div></div>`;
+          return Promise.resolve();
+        }
+
+        this.termEl.classList.add('term-fade-in');
+        setTimeout(() => this.termEl.classList.remove('term-fade-in'), 400);
+
+        const t = step.terminal;
+
+        if (!animated) {
+          if (t.command) {
+            t.command.split('\\n').forEach(cmdLine => {
+              const lineDiv = document.createElement('div');
+              lineDiv.className = 'term-line';
+              if (t.prompt && !cmdLine.startsWith('(')) {
+                const ps = document.createElement('span');
+                ps.className = 'term-prompt';
+                ps.textContent = t.prompt;
+                lineDiv.appendChild(ps);
+              }
+              const cs = document.createElement('span');
+              cs.className = 'term-command';
+              cs.textContent = cmdLine;
+              lineDiv.appendChild(cs);
+              this.termEl.appendChild(lineDiv);
+            });
+          }
+          this.appendOutput(t.output);
+          return Promise.resolve();
+        }
+
+        return (async () => {
+          if (t.command) {
+            const cmds = t.command.split('\\n');
+            for (let c = 0; c < cmds.length; c++) {
+              const lineDiv = document.createElement('div');
+              lineDiv.className = 'term-line';
+              if (t.prompt && !cmds[c].startsWith('(')) {
+                const ps = document.createElement('span');
+                ps.className = 'term-prompt';
+                ps.textContent = t.prompt;
+                lineDiv.appendChild(ps);
+              }
+              this.termEl.appendChild(lineDiv);
+              await this.typeText(cmds[c], lineDiv, 35, 'term-command');
+              await this.delay(150);
+            }
+            await this.delay(400);
+          }
+          this.appendOutput(t.output);
+          await this.delay(2500);
+        })();
+      }
+
+      showStep(idx, animated) {
+        if (idx < 0 || idx >= this.steps.length) return Promise.resolve();
+        this.currentStep = idx;
+        this.updateProgress();
+        this.headerStep.textContent = this.steps[idx].title;
+        this.highlightComment(idx);
+
+        return this.renderTerminal(this.steps[idx], animated);
+      }
+
+      async play() {
+        this.isPlaying = true;
+        this.updatePlayBtn();
+        while (this.isPlaying && this.currentStep < this.steps.length - 1) {
+          await this.showStep(this.currentStep + 1, true);
+          if (!this.isPlaying) break;
+        }
+        this.isPlaying = false;
+        this.updatePlayBtn();
+      }
+
+      pause() {
+        this.isPlaying = false;
+        this.clearTimers();
+        this.updatePlayBtn();
+      }
+
+      togglePlay() {
+        if (this.isPlaying) {
+          this.pause();
+        } else {
+          if (this.currentStep >= this.steps.length - 1) this.currentStep = -1;
+          this.play();
+        }
+      }
+
+      prevStep() { this.pause(); if (this.currentStep > 0) this.showStep(this.currentStep - 1, false); }
+      nextStep() { this.pause(); if (this.currentStep < this.steps.length - 1) this.showStep(this.currentStep + 1, false); }
+
+      cycleSpeed() {
+        this.speedIdx = (this.speedIdx + 1) % this.speeds.length;
+        this.speed = this.speeds[this.speedIdx];
+        this.speedBtn.textContent = this.speed + 'x';
+      }
+
+      seekFromClick(e) {
+        const rect = document.getElementById('progressBar').getBoundingClientRect();
+        const idx = Math.round(((e.clientX - rect.left) / rect.width) * (this.steps.length - 1));
+        this.pause();
+        this.showStep(Math.max(0, Math.min(idx, this.steps.length - 1)), false);
+      }
+    }
+
+    const player = new TerminalPlayer(STEPS);
+
+    function startPlayback() {
+      const splash = document.getElementById('splash');
+      if (splash) splash.classList.add('hidden');
+      setTimeout(() => player.play(), 400);
+    }
+
+    document.addEventListener('keydown', e => {
+      const splashHidden = document.getElementById('splash') && document.getElementById('splash').classList.contains('hidden');
+      if (splashHidden) {
+        if (e.code === 'Space') { e.preventDefault(); player.togglePlay(); }
+        if (e.code === 'ArrowLeft') { e.preventDefault(); player.prevStep(); }
+        if (e.code === 'ArrowRight') { e.preventDefault(); player.nextStep(); }
+      } else {
+        if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); startPlayback(); }
+      }
+    });
+
+  </script>
+</body>
+
+</html>

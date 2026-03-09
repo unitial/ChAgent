@@ -1,0 +1,1776 @@
+diff --git a/backend/database.py b/backend/database.py
+index 2f30221..a8e396c 100644
+--- a/backend/database.py
++++ b/backend/database.py
+@@ -50,6 +50,8 @@ def _migrate_sqlite() -> None:
+         add_col("conversations", "output_tokens", "INTEGER NOT NULL DEFAULT 0")
+         add_col("conversations", "system_prompt", "TEXT")
+         add_col("students", "daily_token_limit", "INTEGER")
++        add_col("students", "profile_updated_at", "DATETIME")
++        add_col("students", "hashed_password", "TEXT")
+         add_col("sessions", "mode", "VARCHAR(32)")
+         add_col("sessions", "doc_path", "TEXT")
+         add_col("sessions", "doc_media_type", "VARCHAR(64)")
+diff --git a/backend/main.py b/backend/main.py
+index dc25458..cceebf7 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -1,8 +1,11 @@
++from pathlib import Path
+ from zoneinfo import ZoneInfo
+ 
+ from apscheduler.schedulers.asyncio import AsyncIOScheduler
+ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
++from fastapi.staticfiles import StaticFiles
++from fastapi.responses import FileResponse
+ 
+ from database import init_db, SessionLocal
+ from services.skills import init_skills_dir
+@@ -92,3 +95,13 @@ app.include_router(textbooks_router.router)
+ @app.get("/health")
+ def health():
+     return {"status": "ok"}
++
++
++# Serve frontend SPA (must be last)
++_FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
++if _FRONTEND_DIST.exists():
++    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="assets")
++
++    @app.get("/{full_path:path}", include_in_schema=False)
++    def serve_spa(full_path: str):
++        return FileResponse(_FRONTEND_DIST / "index.html")
+diff --git a/backend/models/student.py b/backend/models/student.py
+index b515d62..f10ddcf 100644
+--- a/backend/models/student.py
++++ b/backend/models/student.py
+@@ -9,6 +9,7 @@ class Student(Base):
+ 
+     id = Column(Integer, primary_key=True, index=True)
+     name = Column(String, unique=True, index=True, nullable=False)
++    hashed_password = Column(String, nullable=True)
+     feishu_user_id = Column(String, unique=True, index=True, nullable=True)
+     profile_json = Column(
+         JSON,
+@@ -21,6 +22,7 @@ class Student(Base):
+     )
+     created_at = Column(DateTime(timezone=True), server_default=func.now())
+     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
++    profile_updated_at = Column(DateTime(timezone=True), nullable=True)
+     daily_token_limit = Column(Integer, nullable=True)  # None = use global default; 0 = unlimited
+ 
+     sessions = relationship("Session", back_populates="student", cascade="all, delete-orphan")
+diff --git a/backend/routers/auth.py b/backend/routers/auth.py
+index 0a0c212..cd91553 100644
+--- a/backend/routers/auth.py
++++ b/backend/routers/auth.py
+@@ -76,3 +76,23 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: DBSession = Depe
+ @router.get("/me", response_model=TeacherOut)
+ def get_me(current_teacher: Teacher = Depends(get_current_teacher)):
+     return current_teacher
++
++
++class ChangePasswordRequest(BaseModel):
++    current_password: str
++    new_password: str
++
++
++@router.post("/change-password")
++def change_password(
++    payload: ChangePasswordRequest,
++    current_teacher: Teacher = Depends(get_current_teacher),
++    db: DBSession = Depends(get_db),
++):
++    if not verify_password(payload.current_password, current_teacher.hashed_password):
++        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码不正确")
++    if len(payload.new_password) < 6:
++        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码至少需要 6 位")
++    current_teacher.hashed_password = hash_password(payload.new_password)
++    db.commit()
++    return {"ok": True}
+diff --git a/backend/routers/profiles.py b/backend/routers/profiles.py
+index 742bf33..33a7f93 100644
+--- a/backend/routers/profiles.py
++++ b/backend/routers/profiles.py
+@@ -98,14 +98,24 @@ async def trigger_student_update(
+ @router.post("/api/profiles/update-all")
+ async def trigger_all_updates(
+     background_tasks: BackgroundTasks,
++    force: bool = False,
+     _=Depends(get_current_teacher),
+ ):
+     async def _run():
+         _db = SessionLocal()
+         try:
+-            await update_all_profiles(_db)
++            await update_all_profiles(_db, smart=not force)
+         finally:
+             _db.close()
+ 
+     background_tasks.add_task(_run)
+     return {"ok": True, "message": "Profile update for all students started in background"}
++
++
++@router.get("/api/profiles/update-status")
++def get_update_status(db: DBSession = Depends(get_db), _=Depends(get_current_teacher)):
++    from models.student import Student as SM
++    from services.profile_updater import student_needs_profile_update
++    students = db.query(SM).all()
++    needs = [s.id for s in students if student_needs_profile_update(db, s)]
++    return {"total": len(students), "needs_update": len(needs)}
+diff --git a/backend/routers/settings.py b/backend/routers/settings.py
+index b05d521..50b5cbe 100644
+--- a/backend/routers/settings.py
++++ b/backend/routers/settings.py
+@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session as DBSession
+ from typing import Optional
+ 
+ from database import get_db
+-from services.settings import get_model_config, set_setting
++from services.settings import get_model_config, get_profile_model_config, set_setting
+ from routers.auth import get_current_teacher
+ 
+ router = APIRouter(prefix="/api/settings", tags=["settings"])
+@@ -55,3 +55,50 @@ def update_model_settings(
+     if payload.default_daily_token_limit is not None:
+         set_setting(db, "default_daily_token_limit", str(payload.default_daily_token_limit))
+     return {"ok": True}
++
++
++class ProfileModelSettingsUpdate(BaseModel):
++    provider: Optional[str] = None
++    model: Optional[str] = None
++    openrouter_api_key: Optional[str] = None
++
++
++class ProfileModelSettingsOut(BaseModel):
++    raw_provider: str
++    raw_model: str
++    effective_provider: str
++    effective_model: str
++    openrouter_api_key_set: bool
++
++
++VALID_PROFILE_PROVIDERS = {"inherit", "anthropic", "openrouter"}
++
++
++@router.get("/profile-model", response_model=ProfileModelSettingsOut)
++def get_profile_model_settings(db: DBSession = Depends(get_db), _=Depends(get_current_teacher)):
++    cfg = get_profile_model_config(db)
++    return ProfileModelSettingsOut(
++        raw_provider=cfg["raw_provider"],
++        raw_model=cfg["raw_model"],
++        effective_provider=cfg["provider"],
++        effective_model=cfg["model"],
++        openrouter_api_key_set=bool(cfg["openrouter_api_key"]),
++    )
++
++
++@router.put("/profile-model")
++def update_profile_model_settings(
++    payload: ProfileModelSettingsUpdate,
++    db: DBSession = Depends(get_db),
++    _=Depends(get_current_teacher),
++):
++    if payload.provider is not None:
++        if payload.provider not in VALID_PROFILE_PROVIDERS:
++            from fastapi import HTTPException
++            raise HTTPException(status_code=400, detail=f"provider must be one of {VALID_PROFILE_PROVIDERS}")
++        set_setting(db, "profile_update_provider", payload.provider)
++    if payload.model is not None:
++        set_setting(db, "profile_update_model", payload.model)
++    if payload.openrouter_api_key is not None:
++        set_setting(db, "profile_update_openrouter_key", payload.openrouter_api_key)
++    return {"ok": True}
+diff --git a/backend/routers/skills.py b/backend/routers/skills.py
+index d74f353..7d2a772 100644
+--- a/backend/routers/skills.py
++++ b/backend/routers/skills.py
+@@ -1,12 +1,29 @@
++import json
++
+ from fastapi import APIRouter, Depends, HTTPException
+ from pydantic import BaseModel
++from sqlalchemy.orm import Session as DBSession
+ from typing import Optional
+ 
++from database import get_db
+ from services import skills as skills_service
++from services.llm import llm_chat
+ from routers.auth import get_current_teacher
+ 
+ router = APIRouter(prefix="/api/skills", tags=["skills"])
+ 
++AUTOFILL_SYSTEM = """You are a skill extractor for a university Operating Systems teaching assistant system.
++Given raw input text (lecture notes, textbook passages, research papers, teaching materials, etc.), extract the information into a structured skill record.
++
++Return ONLY a JSON object with exactly these fields:
++- name: concise English skill name (e.g. "Virtual Memory and Indirection", "Process Scheduling Algorithms")
++- type: one of "knowledge_point" | "teaching_strategy" | "global" | "challenge" — use "knowledge_point" for domain content, "teaching_strategy" for pedagogy, "global" for universal instructions
++- description: 1-2 sentence Chinese description of what this skill covers
++- content: the skill's teaching content in markdown format — distill key concepts, common pitfalls, and teaching hints (3-6 paragraphs). Write as instructions to the AI tutor, not as a lecture.
++- source: author or source reference if detectable from the text, otherwise empty string
++
++Output ONLY valid JSON, no preamble, no markdown code fences."""
++
+ 
+ class SkillCreate(BaseModel):
+     name: str
+@@ -95,3 +112,46 @@ def update_skill(skill_id: str, payload: SkillUpdate, _=Depends(get_current_teac
+ def delete_skill(skill_id: str, _=Depends(get_current_teacher)):
+     if not skills_service.delete_skill(skill_id):
+         raise HTTPException(status_code=404, detail="Skill not found")
++
++
++class AutofillRequest(BaseModel):
++    text: str
++
++
++class AutofillOut(BaseModel):
++    name: str = ""
++    type: str = "knowledge_point"
++    description: str = ""
++    content: str = ""
++    source: str = ""
++
++
++@router.post("/autofill", response_model=AutofillOut)
++def autofill_skill(
++    payload: AutofillRequest,
++    db: DBSession = Depends(get_db),
++    _=Depends(get_current_teacher),
++):
++    if not payload.text.strip():
++        raise HTTPException(status_code=400, detail="text is required")
++    messages = [{"role": "user", "content": payload.text}]
++    raw_text, _, _ = llm_chat(db, AUTOFILL_SYSTEM, messages)
++    raw = raw_text.strip()
++    # Strip markdown code fences if present
++    if raw.startswith("```"):
++        parts = raw.split("```")
++        raw = parts[1] if len(parts) > 1 else raw
++        if raw.startswith("json"):
++            raw = raw[4:]
++        raw = raw.strip()
++    try:
++        data = json.loads(raw)
++    except json.JSONDecodeError:
++        raise HTTPException(status_code=502, detail="Model returned invalid JSON")
++    return AutofillOut(
++        name=data.get("name", ""),
++        type=data.get("type", "knowledge_point"),
++        description=data.get("description", ""),
++        content=data.get("content", ""),
++        source=data.get("source", ""),
++    )
+diff --git a/backend/routers/student_chat.py b/backend/routers/student_chat.py
+index 672f8e5..2a3f63b 100644
+--- a/backend/routers/student_chat.py
++++ b/backend/routers/student_chat.py
+@@ -18,7 +18,8 @@ from services import agent as agent_service
+ from services import skills as skills_service
+ from services.memory import summarize_session
+ from services.usage import check_daily_limit
+-from routers.auth import create_access_token
++from services.profile import get_profile_context_for_prompt
++from routers.auth import create_access_token, verify_password, hash_password
+ from config import get_settings
+ 
+ settings = get_settings()
+@@ -42,6 +43,17 @@ ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt"}
+ 
+ class LoginRequest(BaseModel):
+     name: str
++    password: Optional[str] = None
++
++
++class RegisterRequest(BaseModel):
++    name: str
++    password: str
++
++
++class ChangeStudentPasswordRequest(BaseModel):
++    current_password: str
++    new_password: str
+ 
+ 
+ class ChatRequest(BaseModel):
+@@ -67,6 +79,14 @@ class HistoryMessage(BaseModel):
+     system_prompt: Optional[str] = None
+ 
+ 
++class SessionOut(BaseModel):
++    id: int
++    started_at: str
++    message_count: int
++    last_message: Optional[str] = None
++    mode: Optional[str] = None
++
++
+ class ChallengeSessionOut(BaseModel):
+     session_id: int
+     mode: str
+@@ -226,6 +246,49 @@ def _save_document(file_bytes: bytes, original_filename: str, content_type: str)
+ 
+ # --- Routes ---
+ 
++@router.get("/sessions", response_model=list[SessionOut])
++def list_sessions(
++    db: DBSession = Depends(get_db),
++    student: Student = Depends(get_current_student),
++):
++    """Return recent sessions for the current student, latest first."""
++    sessions = (
++        db.query(ConvSession)
++        .filter(ConvSession.student_id == student.id)
++        .order_by(ConvSession.started_at.desc())
++        .limit(20)
++        .all()
++    )
++    if not sessions:
++        return []
++
++    session_ids = [s.id for s in sessions]
++    convs = (
++        db.query(Conversation)
++        .filter(Conversation.session_id.in_(session_ids))
++        .order_by(Conversation.created_at.asc())
++        .all()
++    )
++
++    from collections import defaultdict
++    conv_map: dict = defaultdict(list)
++    for c in convs:
++        conv_map[c.session_id].append(c)
++
++    result = []
++    for s in sessions:
++        msgs = conv_map[s.id]
++        last_user = next((m for m in reversed(msgs) if m.role == "user"), None)
++        result.append(SessionOut(
++            id=s.id,
++            started_at=s.started_at.isoformat(),
++            message_count=len(msgs),
++            last_message=last_user.content[:50] if last_user else None,
++            mode=s.mode,
++        ))
++    return result
++
++
+ @router.post("/session/new")
+ def new_session(
+     db: DBSession = Depends(get_db),
+@@ -239,15 +302,23 @@ def new_session(
+     return {"session_id": session.id}
+ 
+ 
+-@router.post("/login")
+-def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
++@router.post("/register")
++def student_register(req: RegisterRequest, db: DBSession = Depends(get_db)):
+     name = req.name.strip()
+     if not name:
+-        raise HTTPException(status_code=400, detail="Name cannot be empty")
++        raise HTTPException(status_code=400, detail="姓名不能为空")
++    if len(req.password) < 6:
++        raise HTTPException(status_code=400, detail="密码至少需要 6 位")
+ 
+     student = db.query(Student).filter(Student.name == name).first()
+-    if not student:
+-        student = Student(name=name, feishu_user_id=None)
++    if student:
++        if student.hashed_password:
++            raise HTTPException(status_code=400, detail="该姓名已注册，请直接登录")
++        # Legacy account without password — let them claim it by setting a password
++        student.hashed_password = hash_password(req.password)
++        db.commit()
++    else:
++        student = Student(name=name, feishu_user_id=None, hashed_password=hash_password(req.password))
+         db.add(student)
+         db.commit()
+         db.refresh(student)
+@@ -256,6 +327,40 @@ def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
+     return {"access_token": token, "token_type": "bearer", "name": student.name}
+ 
+ 
++@router.post("/login")
++def student_login(req: LoginRequest, db: DBSession = Depends(get_db)):
++    name = req.name.strip()
++    if not name:
++        raise HTTPException(status_code=400, detail="姓名不能为空")
++
++    student = db.query(Student).filter(Student.name == name).first()
++    if not student:
++        raise HTTPException(status_code=400, detail="该姓名未注册，请先注册")
++
++    if student.hashed_password:
++        if not req.password or not verify_password(req.password, student.hashed_password):
++            raise HTTPException(status_code=400, detail="密码错误")
++    # Legacy accounts without a password: allow login without password
++
++    token = create_access_token({"sub": str(student.id), "type": "student"})
++    return {"access_token": token, "token_type": "bearer", "name": student.name}
++
++
++@router.post("/change-password")
++def student_change_password(
++    req: ChangeStudentPasswordRequest,
++    student: Student = Depends(get_current_student),
++    db: DBSession = Depends(get_db),
++):
++    if student.hashed_password and not verify_password(req.current_password, student.hashed_password):
++        raise HTTPException(status_code=400, detail="当前密码不正确")
++    if len(req.new_password) < 6:
++        raise HTTPException(status_code=400, detail="新密码至少需要 6 位")
++    student.hashed_password = hash_password(req.new_password)
++    db.commit()
++    return {"ok": True}
++
++
+ @router.post("/chat", response_model=ChatResponse)
+ async def student_chat(
+     req: ChatRequest,
+@@ -431,13 +536,50 @@ def challenge_start(
+     db.refresh(session)
+ 
+     # Generate an opening greeting from the AI for new sessions
+-    kp_skills = [s["name"] for s in skills_service.list_skills() if s["enabled"] and s["type"] == "knowledge_point"]
+-    topics_str = "、".join(kp_skills) if kp_skills else "（暂无预设知识点）"
+-    kickoff = (
+-        f"（系统提示：挑战模式新会话已启动。当前可供选择的知识领域有：{topics_str}。"
+-        "请用中文向学生打招呼，简要说明挑战模式的玩法，然后列出上述知识领域供学生选择，"
+-        "同时说明学生也可以自由输入任何想挑战的主题。）"
++    # Build KP skill info (name + description)
++    kp_skills = [s for s in skills_service.list_skills() if s["enabled"] and s["type"] == "knowledge_point"]
++    if kp_skills:
++        topics_info = "\n".join(
++            f"- {s['name']}" + (f"：{s['description']}" if s.get("description") else "")
++            for s in kp_skills
++        )
++    else:
++        topics_info = "（暂无预设知识点）"
++
++    # Get student profile context
++    profile_context = get_profile_context_for_prompt(student.id)
++
++    # Get recent normal session conversations (last 10 messages)
++    recent_convs = (
++        db.query(Conversation)
++        .join(ConvSession, Conversation.session_id == ConvSession.id)
++        .filter(
++            ConvSession.student_id == student.id,
++            ConvSession.mode.is_(None),
++        )
++        .order_by(Conversation.created_at.desc())
++        .limit(10)
++        .all()
+     )
++    if recent_convs:
++        recent_msgs = "\n".join(
++            f"[{c.role}]: {c.content[:200]}" for c in reversed(recent_convs)
++        )
++    else:
++        recent_msgs = "（无近期对话记录）"
++
++    kickoff = f"""（系统提示：挑战模式新会话已启动。
++
++**学生画像**：
++{profile_context if profile_context else '暂无画像数据'}
++
++**近期对话记录（最近10条）**：
++{recent_msgs}
++
++**可供出题的预设知识领域**：
++{topics_info}
++
++请根据以上信息，用中文向学生打招呼，简要说明挑战模式的玩法，然后**主动推荐 1-2 个基于学生薄弱环节或近期话题的挑战方向**，并说明理由。同时告知学生可以接受推荐、选择其他知识领域，或自由输入任何想挑战的主题——即使没有预设知识领域也可以继续挑战。）"""
+     reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, kickoff)
+     db.add(Conversation(
+         student_id=student.id, session_id=session.id,
+diff --git a/backend/routers/students.py b/backend/routers/students.py
+index d10229b..055d27f 100644
+--- a/backend/routers/students.py
++++ b/backend/routers/students.py
+@@ -11,6 +11,7 @@ from models.student import Student
+ from models.conversation import Conversation, Session as ConvSession
+ from services.usage import get_daily_tokens, get_daily_limit_info
+ from services.profile import list_profile_aspects
++from services.profile_updater import student_needs_profile_update
+ from routers.auth import get_current_teacher
+ 
+ router = APIRouter(prefix="/api/students", tags=["students"])
+@@ -26,6 +27,8 @@ class StudentOut(BaseModel):
+     today_tokens: int = 0
+     created_at: Optional[str] = None
+     updated_at: Optional[str] = None
++    profile_updated_at: Optional[str] = None
++    needs_profile_update: bool = False
+ 
+     class Config:
+         from_attributes = True
+@@ -87,6 +90,8 @@ def list_students(db: DBSession = Depends(get_db), _=Depends(get_current_teacher
+             today_tokens=int(today_tokens),
+             created_at=s.created_at.isoformat() if s.created_at else None,
+             updated_at=s.updated_at.isoformat() if s.updated_at else None,
++            profile_updated_at=s.profile_updated_at.isoformat() if s.profile_updated_at else None,
++            needs_profile_update=student_needs_profile_update(db, s),
+         )
+         for s, today_tokens in rows
+     ]
+diff --git a/backend/services/llm.py b/backend/services/llm.py
+index d40d30e..63ace01 100644
+--- a/backend/services/llm.py
++++ b/backend/services/llm.py
+@@ -11,6 +11,13 @@ _app_settings = get_settings()
+ def llm_chat(db: DBSession, system: str, messages: list[dict], document: dict | None = None) -> tuple[str, int, int]:
+     """Call the configured LLM provider. Returns (text, input_tokens, output_tokens)."""
+     config = get_model_config(db)
++    return llm_chat_with_config(config, system, messages, document)
++
++
++def llm_chat_with_config(
++    config: dict, system: str, messages: list[dict], document: dict | None = None
++) -> tuple[str, int, int]:
++    """Call an LLM provider using an explicit config dict."""
+     provider = config["provider"]
+     model = config["model"]
+ 
+diff --git a/backend/services/profile_updater.py b/backend/services/profile_updater.py
+index 8b12d95..690f2aa 100644
+--- a/backend/services/profile_updater.py
++++ b/backend/services/profile_updater.py
+@@ -13,7 +13,7 @@ from services.profile import (
+     list_profile_aspects,
+ )
+ from services.skills import get_skill
+-from services.llm import llm_chat
++from services.llm import llm_chat_with_config
+ 
+ PROFILE_UPDATE_SKILL_SLUG = "profile-update"
+ 
+@@ -51,8 +51,19 @@ def _get_recent_convs(db: DBSession, student_id: int, days: int = 7) -> list[dic
+     return [{"role": c.role, "content": c.content} for c in convs]
+ 
+ 
++def student_needs_profile_update(db: DBSession, student: Student) -> bool:
++    """有新对话（晚于上次画像更新）则返回 True。"""
++    last = student.profile_updated_at
++    q = db.query(Conversation).filter(Conversation.student_id == student.id)
++    if last:
++        q = q.filter(Conversation.created_at > last)
++    return q.first() is not None
++
++
+ async def update_student_profile(db: DBSession, student: Student) -> bool:
+     """Update a student's file-based profile via LLM analysis of recent conversations."""
++    from services.settings import get_profile_model_config
++
+     convs = _get_recent_convs(db, student.id)
+     if not convs:
+         print(f"[profile] No recent conversations for {student.name}, skipping.")
+@@ -76,8 +87,9 @@ async def update_student_profile(db: DBSession, student: Student) -> bool:
+     )
+ 
+     try:
++        profile_cfg = get_profile_model_config(db)
+         response_text, _, _ = await asyncio.to_thread(
+-            llm_chat, db, system_prompt, [{"role": "user", "content": user_message}]
++            llm_chat_with_config, profile_cfg, system_prompt, [{"role": "user", "content": user_message}]
+         )
+     except Exception as e:
+         print(f"[profile] LLM call failed for {student.name}: {e}")
+@@ -109,16 +121,19 @@ async def update_student_profile(db: DBSession, student: Student) -> bool:
+             updated += 1
+ 
+     update_profile_index_from_aspects(student.id, student.name)
++    student.profile_updated_at = datetime.now(timezone.utc)
++    db.commit()
+     print(f"[profile] Updated {updated} aspects for {student.name}")
+     return True
+ 
+ 
+-async def update_all_profiles(db: DBSession) -> dict:
+-    from models.student import Student as StudentModel
+-
+-    students = db.query(StudentModel).all()
+-    results = {"success": 0, "skipped": 0, "failed": 0}
++async def update_all_profiles(db: DBSession, smart: bool = True) -> dict:
++    students = db.query(Student).all()
++    results = {"success": 0, "skipped": 0, "failed": 0, "not_needed": 0}
+     for student in students:
++        if smart and not student_needs_profile_update(db, student):
++            results["not_needed"] += 1
++            continue
+         try:
+             ok = await update_student_profile(db, student)
+             results["success" if ok else "skipped"] += 1
+diff --git a/backend/services/settings.py b/backend/services/settings.py
+index dbcf0cd..418178c 100644
+--- a/backend/services/settings.py
++++ b/backend/services/settings.py
+@@ -37,3 +37,17 @@ def get_model_config(db: DBSession) -> dict:
+         "openrouter_api_key": get_setting(db, "openrouter_api_key", ""),
+         "default_daily_token_limit": int(get_setting(db, "default_daily_token_limit", "0")),
+     }
++
++
++def get_profile_model_config(db: DBSession) -> dict:
++    global_cfg = get_model_config(db)
++    p = get_setting(db, "profile_update_provider", "inherit")
++    m = get_setting(db, "profile_update_model", "inherit")
++    k = get_setting(db, "profile_update_openrouter_key", "")
++    return {
++        "provider": global_cfg["provider"] if p == "inherit" else p,
++        "model": global_cfg["model"] if m == "inherit" else m,
++        "openrouter_api_key": k or global_cfg["openrouter_api_key"],
++        "raw_provider": p,
++        "raw_model": m,
++    }
+diff --git a/frontend/src/api/index.ts b/frontend/src/api/index.ts
+index ae1af7c..5f29b2a 100644
+--- a/frontend/src/api/index.ts
++++ b/frontend/src/api/index.ts
+@@ -24,6 +24,8 @@ export interface Student {
+   today_tokens: number
+   created_at: string
+   updated_at: string
++  profile_updated_at: string | null
++  needs_profile_update: boolean
+ }
+ 
+ export interface Conversation {
+@@ -66,6 +68,8 @@ export const login = (username: string, password: string) =>
+   })
+ 
+ export const getMe = () => api.get('/auth/me')
++export const changePassword = (current_password: string, new_password: string) =>
++  api.post('/auth/change-password', { current_password, new_password })
+ 
+ // Students
+ export const getStudents = () => api.get<Student[]>('/students')
+@@ -78,6 +82,16 @@ export const createSkill = (data: Omit<Skill, 'id' | 'created_at'>) => api.post<
+ export const updateSkill = (id: string, data: Partial<Skill>) => api.put<Skill>(`/skills/${id}`, data)
+ export const deleteSkill = (id: string) => api.delete(`/skills/${id}`)
+ 
++export interface SkillAutofillResult {
++  name: string
++  type: string
++  description: string
++  content: string
++  source: string
++}
++export const autofillSkill = (text: string) =>
++  api.post<SkillAutofillResult>('/skills/autofill', { text })
++
+ // Model Settings
+ export interface ModelSettings {
+   provider: 'anthropic' | 'openrouter'
+@@ -111,8 +125,22 @@ export const deleteProfileAspect = (studentId: number, slug: string) =>
+   api.delete(`/students/${studentId}/profile/${slug}`)
+ export const triggerStudentProfileUpdate = (id: number) =>
+   api.post(`/students/${id}/profile/update`)
+-export const triggerAllProfileUpdates = () =>
+-  api.post('/profiles/update-all')
++export const triggerAllProfileUpdates = (force = false) =>
++  api.post('/profiles/update-all', null, { params: force ? { force: true } : {} })
++export const getProfileUpdateStatus = () =>
++  api.get<{ total: number; needs_update: number }>('/profiles/update-status')
++
++// Model Settings - Profile
++export interface ProfileModelSettings {
++  raw_provider: 'inherit' | 'anthropic' | 'openrouter'
++  raw_model: string
++  effective_provider: string
++  effective_model: string
++  openrouter_api_key_set: boolean
++}
++export const getProfileModelSettings = () => api.get<ProfileModelSettings>('/settings/profile-model')
++export const updateProfileModelSettings = (data: { provider?: string; model?: string; openrouter_api_key?: string }) =>
++  api.put('/settings/profile-model', data)
+ 
+ // Dashboard
+ export const getDashboardStats = () => api.get<DashboardStats>('/dashboard/stats')
+@@ -169,8 +197,14 @@ export interface StudentHistoryMessage {
+   system_prompt?: string
+ }
+ 
+-export const studentLogin = (name: string) =>
+-  studentApi.post<StudentLoginResponse>('/student/login', { name })
++export const studentLogin = (name: string, password?: string) =>
++  studentApi.post<StudentLoginResponse>('/student/login', { name, password })
++
++export const studentRegister = (name: string, password: string) =>
++  studentApi.post<StudentLoginResponse>('/student/register', { name, password })
++
++export const studentChangePassword = (current_password: string, new_password: string) =>
++  studentApi.post('/student/change-password', { current_password, new_password })
+ 
+ export const studentNewSession = () =>
+   studentApi.post<{ session_id: number }>('/student/session/new')
+@@ -189,6 +223,17 @@ export const studentChatWithFile = (message: string, file: File, session_id?: nu
+ export const studentHistory = (session_id?: number) =>
+   studentApi.get<StudentHistoryMessage[]>('/student/history', { params: session_id != null ? { session_id } : undefined })
+ 
++export interface StudentSession {
++  id: number
++  started_at: string
++  message_count: number
++  last_message: string | null
++  mode: string | null
++}
++
++export const studentListSessions = () =>
++  studentApi.get<StudentSession[]>('/student/sessions')
++
+ export interface ChallengeSession {
+   session_id: number
+   mode: string
+diff --git a/frontend/src/components/StudentProfileDrawer.tsx b/frontend/src/components/StudentProfileDrawer.tsx
+index f95ac9d..4ff0be4 100644
+--- a/frontend/src/components/StudentProfileDrawer.tsx
++++ b/frontend/src/components/StudentProfileDrawer.tsx
+@@ -84,7 +84,7 @@ export default function StudentProfileDrawer({ student, conversations, open, onC
+     setUpdating(true)
+     try {
+       await triggerStudentProfileUpdate(student.id)
+-      message.success('画像更新任务已启动，稍后刷新可查看结果')
++      message.info('画像更新已在后台启动，完成后请点击「刷新」查看结果')
+     } catch {
+       message.error('启动更新失败')
+     } finally {
+@@ -296,7 +296,7 @@ export default function StudentProfileDrawer({ student, conversations, open, onC
+         title={isNew ? '添加画像维度' : `编辑：${editAspect?.name}`}
+         open={editAspect !== null || isNew}
+         onOk={handleEditSave}
+-        onCancel={() => setEditAspect(null)}
++        onCancel={() => { setEditAspect(null); setIsNew(false) }}
+         confirmLoading={editSaving}
+         width={560}
+         destroyOnClose
+diff --git a/frontend/src/pages/ModelSettings.tsx b/frontend/src/pages/ModelSettings.tsx
+index 56fe29c..300432e 100644
+--- a/frontend/src/pages/ModelSettings.tsx
++++ b/frontend/src/pages/ModelSettings.tsx
+@@ -1,16 +1,26 @@
+ import { useEffect, useState } from 'react'
+ import {
+-  Card, Form, Input, Select, InputNumber, Button, Switch,
++  Card, Form, Input, Select, InputNumber, Button,
+   Typography, Space, message, Divider, Alert,
+ } from 'antd'
+-import { SaveOutlined } from '@ant-design/icons'
+-import { getModelSettings, updateModelSettings, type ModelSettings } from '../api'
++import { SaveOutlined, UndoOutlined, LockOutlined } from '@ant-design/icons'
++import {
++  getModelSettings, updateModelSettings,
++  getProfileModelSettings, updateProfileModelSettings,
++  changePassword,
++} from '../api'
+ 
+ const PROVIDER_OPTIONS = [
+   { value: 'anthropic', label: 'Anthropic (直连)' },
+   { value: 'openrouter', label: 'OpenRouter' },
+ ]
+ 
++const PROFILE_PROVIDER_OPTIONS = [
++  { value: 'inherit', label: '继承全局' },
++  { value: 'anthropic', label: 'Anthropic (直连)' },
++  { value: 'openrouter', label: 'OpenRouter' },
++]
++
+ const ANTHROPIC_MODELS = [
+   'claude-sonnet-4-6',
+   'claude-opus-4-6',
+@@ -32,6 +42,19 @@ export default function ModelSettingsPage() {
+   const [keySet, setKeySet] = useState(false)
+   const [changeKey, setChangeKey] = useState(false)
+ 
++  // Profile model state
++  const [profileForm] = Form.useForm()
++  const [profileLoading, setProfileLoading] = useState(true)
++  const [profileSaving, setProfileSaving] = useState(false)
++  const [profileProvider, setProfileProvider] = useState<'inherit' | 'anthropic' | 'openrouter'>('inherit')
++  const [profileKeySet, setProfileKeySet] = useState(false)
++  const [changeProfileKey, setChangeProfileKey] = useState(false)
++  const [profileEffective, setProfileEffective] = useState({ provider: '', model: '' })
++
++  // Change password state
++  const [pwForm] = Form.useForm()
++  const [pwSaving, setPwSaving] = useState(false)
++
+   useEffect(() => {
+     getModelSettings()
+       .then((res) => {
+@@ -45,7 +68,20 @@ export default function ModelSettingsPage() {
+         setKeySet(d.openrouter_api_key_set)
+       })
+       .finally(() => setLoading(false))
+-  }, [form])
++
++    getProfileModelSettings()
++      .then((res) => {
++        const d = res.data
++        profileForm.setFieldsValue({
++          provider: d.raw_provider,
++          model: d.raw_model === 'inherit' ? '' : d.raw_model,
++        })
++        setProfileProvider(d.raw_provider)
++        setProfileKeySet(d.openrouter_api_key_set)
++        setProfileEffective({ provider: d.effective_provider, model: d.effective_model })
++      })
++      .finally(() => setProfileLoading(false))
++  }, [form, profileForm])
+ 
+   const handleSave = async () => {
+     const values = await form.validateFields()
+@@ -70,18 +106,78 @@ export default function ModelSettingsPage() {
+     }
+   }
+ 
++  const handleProfileSave = async () => {
++    const values = await profileForm.validateFields()
++    setProfileSaving(true)
++    try {
++      const payload: Parameters<typeof updateProfileModelSettings>[0] = {
++        provider: values.provider,
++        model: values.provider === 'inherit' ? 'inherit' : (values.model || 'inherit'),
++      }
++      if (changeProfileKey && values.openrouter_api_key) {
++        payload.openrouter_api_key = values.openrouter_api_key
++      }
++      await updateProfileModelSettings(payload)
++      message.success('画像模型设置已保存')
++      setChangeProfileKey(false)
++      // Refresh effective values
++      const res = await getProfileModelSettings()
++      setProfileEffective({ provider: res.data.effective_provider, model: res.data.effective_model })
++      setProfileKeySet(res.data.openrouter_api_key_set)
++    } catch {
++      message.error('保存失败')
++    } finally {
++      setProfileSaving(false)
++    }
++  }
++
++  const handleProfileReset = async () => {
++    setProfileSaving(true)
++    try {
++      await updateProfileModelSettings({ provider: 'inherit', model: 'inherit' })
++      profileForm.setFieldsValue({ provider: 'inherit', model: '' })
++      setProfileProvider('inherit')
++      message.success('已恢复继承全局设置')
++      const res = await getProfileModelSettings()
++      setProfileEffective({ provider: res.data.effective_provider, model: res.data.effective_model })
++    } catch {
++      message.error('重置失败')
++    } finally {
++      setProfileSaving(false)
++    }
++  }
++
++  const handleChangePassword = async () => {
++    const values = await pwForm.validateFields()
++    setPwSaving(true)
++    try {
++      await changePassword(values.current_password, values.new_password)
++      message.success('密码已修改')
++      pwForm.resetFields()
++    } catch (err: any) {
++      message.error(err?.response?.data?.detail || '修改失败')
++    } finally {
++      setPwSaving(false)
++    }
++  }
++
+   const modelOptions =
+     provider === 'anthropic'
+       ? ANTHROPIC_MODELS.map((m) => ({ value: m, label: m }))
+       : OPENROUTER_EXAMPLE_MODELS.map((m) => ({ value: m, label: m }))
+ 
++  const profileModelOptions =
++    profileProvider === 'anthropic'
++      ? ANTHROPIC_MODELS.map((m) => ({ value: m, label: m }))
++      : OPENROUTER_EXAMPLE_MODELS.map((m) => ({ value: m, label: m }))
++
+   return (
+     <div>
+       <Typography.Title level={4} style={{ marginBottom: 24 }}>
+         模型设置
+       </Typography.Title>
+ 
+-      <Card loading={loading} style={{ maxWidth: 640 }}>
++      <Card loading={loading} style={{ maxWidth: 640, marginBottom: 24 }}>
+         <Form form={form} layout="vertical" onFinish={handleSave}>
+           <Form.Item name="provider" label="LLM 提供商" rules={[{ required: true }]}>
+             <Select
+@@ -96,7 +192,7 @@ export default function ModelSettingsPage() {
+           <Form.Item name="model" label="模型名称" rules={[{ required: true }]}>
+             <Select
+               options={modelOptions}
+-              mode="combobox"
++              showSearch
+               placeholder={provider === 'openrouter' ? '输入 OpenRouter 模型 ID，如 openai/gpt-4o' : undefined}
+             />
+           </Form.Item>
+@@ -145,6 +241,135 @@ export default function ModelSettingsPage() {
+           </Form.Item>
+         </Form>
+       </Card>
++
++      <Card
++        title="画像更新专用模型"
++        loading={profileLoading}
++        style={{ maxWidth: 640, marginBottom: 24 }}
++        extra={
++          <Button size="small" icon={<UndoOutlined />} onClick={handleProfileReset} loading={profileSaving}>
++            恢复继承
++          </Button>
++        }
++      >
++        <Alert
++          message={`当前生效：${profileEffective.provider} / ${profileEffective.model}`}
++          type="info"
++          showIcon
++          style={{ marginBottom: 16 }}
++        />
++        <Form form={profileForm} layout="vertical">
++          <Form.Item name="provider" label="提供商" rules={[{ required: true }]}>
++            <Select
++              options={PROFILE_PROVIDER_OPTIONS}
++              onChange={(v) => {
++                setProfileProvider(v)
++                if (v !== 'inherit') {
++                  profileForm.setFieldValue('model', v === 'anthropic' ? ANTHROPIC_MODELS[0] : OPENROUTER_EXAMPLE_MODELS[0])
++                } else {
++                  profileForm.setFieldValue('model', '')
++                }
++              }}
++            />
++          </Form.Item>
++
++          {profileProvider === 'inherit' ? (
++            <Form.Item label="模型名称">
++              <Input disabled value={profileEffective.model} />
++            </Form.Item>
++          ) : (
++            <Form.Item name="model" label="模型名称" rules={[{ required: true }]}>
++              <Select
++                options={profileModelOptions}
++                showSearch
++                placeholder={profileProvider === 'openrouter' ? '输入 OpenRouter 模型 ID' : undefined}
++              />
++            </Form.Item>
++          )}
++
++          {profileProvider === 'openrouter' && (
++            <>
++              <Divider />
++              {profileKeySet && !changeProfileKey ? (
++                <Form.Item label="画像专用 OpenRouter API Key">
++                  <Space>
++                    <Alert message="API Key 已设置" type="success" showIcon style={{ flex: 1 }} />
++                    <Button size="small" onClick={() => setChangeProfileKey(true)}>更换</Button>
++                  </Space>
++                </Form.Item>
++              ) : (
++                <Form.Item
++                  name="openrouter_api_key"
++                  label="画像专用 OpenRouter API Key（留空则继承全局）"
++                >
++                  <Input.Password placeholder="sk-or-... （可选）" />
++                </Form.Item>
++              )}
++            </>
++          )}
++
++          <Form.Item>
++            <Button
++              type="primary"
++              icon={<SaveOutlined />}
++              loading={profileSaving}
++              onClick={handleProfileSave}
++            >
++              保存画像模型设置
++            </Button>
++          </Form.Item>
++        </Form>
++      </Card>
++
++      <Card title="修改管理员密码" style={{ maxWidth: 640 }}>
++        <Form form={pwForm} layout="vertical">
++          <Form.Item
++            name="current_password"
++            label="当前密码"
++            rules={[{ required: true, message: '请输入当前密码' }]}
++          >
++            <Input.Password placeholder="请输入当前密码" />
++          </Form.Item>
++          <Form.Item
++            name="new_password"
++            label="新密码"
++            rules={[
++              { required: true, message: '请输入新密码' },
++              { min: 6, message: '新密码至少需要 6 位' },
++            ]}
++          >
++            <Input.Password placeholder="至少 6 位" />
++          </Form.Item>
++          <Form.Item
++            name="confirm_password"
++            label="确认新密码"
++            dependencies={['new_password']}
++            rules={[
++              { required: true, message: '请再次输入新密码' },
++              ({ getFieldValue }) => ({
++                validator(_, value) {
++                  if (!value || getFieldValue('new_password') === value) {
++                    return Promise.resolve()
++                  }
++                  return Promise.reject(new Error('两次输入的密码不一致'))
++                },
++              }),
++            ]}
++          >
++            <Input.Password placeholder="再次输入新密码" />
++          </Form.Item>
++          <Form.Item>
++            <Button
++              type="primary"
++              icon={<LockOutlined />}
++              loading={pwSaving}
++              onClick={handleChangePassword}
++            >
++              修改密码
++            </Button>
++          </Form.Item>
++        </Form>
++      </Card>
+     </div>
+   )
+ }
+diff --git a/frontend/src/pages/Skills.tsx b/frontend/src/pages/Skills.tsx
+index aaa8c60..d60ff81 100644
+--- a/frontend/src/pages/Skills.tsx
++++ b/frontend/src/pages/Skills.tsx
+@@ -3,8 +3,8 @@ import {
+   Table, Button, Space, Typography, Tag, Modal, Form,
+   Input, Select, Switch, message, Popconfirm,
+ } from 'antd'
+-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+-import { getSkills, createSkill, updateSkill, deleteSkill, type Skill } from '../api'
++import { PlusOutlined, EditOutlined, DeleteOutlined, ThunderboltOutlined } from '@ant-design/icons'
++import { getSkills, createSkill, updateSkill, deleteSkill, autofillSkill, type Skill } from '../api'
+ import dayjs from 'dayjs'
+ 
+ const TYPE_LABELS: Record<string, string> = {
+@@ -32,6 +32,9 @@ export default function Skills() {
+   const [saving, setSaving] = useState(false)
+   const [filterType, setFilterType] = useState<string | undefined>(undefined)
+   const [filterSource, setFilterSource] = useState<string | undefined>(undefined)
++  const [autofillOpen, setAutofillOpen] = useState(false)
++  const [autofillText, setAutofillText] = useState('')
++  const [autofilling, setAutofilling] = useState(false)
+ 
+   const fetchSkills = () => {
+     setLoading(true)
+@@ -46,15 +49,33 @@ export default function Skills() {
+     setEditingSkill(null)
+     form.resetFields()
+     form.setFieldsValue({ enabled: true })
++    setAutofillOpen(true)
++    setAutofillText('')
+     setModalOpen(true)
+   }
+ 
+   const openEdit = (skill: Skill) => {
+     setEditingSkill(skill)
+     form.setFieldsValue(skill)
++    setAutofillOpen(false)
++    setAutofillText('')
+     setModalOpen(true)
+   }
+ 
++  const handleAutofill = async () => {
++    if (!autofillText.trim()) return
++    setAutofilling(true)
++    try {
++      const res = await autofillSkill(autofillText)
++      form.setFieldsValue(res.data)
++      message.success('已自动填充，请检查并按需调整')
++    } catch {
++      message.error('自动填充失败，请重试')
++    } finally {
++      setAutofilling(false)
++    }
++  }
++
+   const handleSave = async () => {
+     const values = await form.validateFields()
+     setSaving(true)
+@@ -204,6 +225,41 @@ export default function Skills() {
+         confirmLoading={saving}
+         width={640}
+       >
++        {/* Auto-fill panel */}
++        <div style={{ marginBottom: 16, padding: 12, background: '#f6f9ff', borderRadius: 8, border: '1px solid #d6e4ff' }}>
++          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++            <Typography.Text strong style={{ fontSize: 13, color: '#1677ff' }}>
++              <ThunderboltOutlined style={{ marginRight: 6 }} />
++              AI 自动填充
++            </Typography.Text>
++            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setAutofillOpen(o => !o)}>
++              {autofillOpen ? '收起' : '展开'}
++            </Button>
++          </div>
++          {autofillOpen && (
++            <div style={{ marginTop: 10 }}>
++              <Input.TextArea
++                rows={5}
++                placeholder="粘贴原始文本（讲义、论文、教材片段等），AI 将自动提取并填充下方字段"
++                value={autofillText}
++                onChange={e => setAutofillText(e.target.value)}
++                style={{ marginBottom: 8 }}
++              />
++              <Button
++                type="primary"
++                ghost
++                size="small"
++                icon={<ThunderboltOutlined />}
++                loading={autofilling}
++                disabled={!autofillText.trim()}
++                onClick={handleAutofill}
++              >
++                自动填充
++              </Button>
++            </div>
++          )}
++        </div>
++
+         <Form form={form} layout="vertical">
+           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
+             <Input placeholder="例：进程调度算法解析" />
+diff --git a/frontend/src/pages/StudentChat.tsx b/frontend/src/pages/StudentChat.tsx
+index 95d1015..a5fdf14 100644
+--- a/frontend/src/pages/StudentChat.tsx
++++ b/frontend/src/pages/StudentChat.tsx
+@@ -1,9 +1,10 @@
+ import { useState, useEffect, useRef, KeyboardEvent } from 'react'
+ import ReactMarkdown from 'react-markdown'
+ import remarkGfm from 'remark-gfm'
+-import { studentLogin, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, StudentHistoryMessage, Citation } from '../api'
++import { studentLogin, studentRegister, studentChangePassword, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, studentListSessions, StudentHistoryMessage, Citation, StudentSession } from '../api'
+ 
+ type Stage = 'unregistered' | 'chatting'
++type AuthTab = 'login' | 'register'
+ 
+ interface Message {
+   id?: number
+@@ -23,50 +24,6 @@ interface ChallengeState {
+ const ALLOWED_EXTENSIONS = ['.pdf', '.pptx', '.ppt']
+ const MAX_FILE_MB = 20
+ 
+-function SystemPromptModal({ prompt, onClose }: { prompt: string; onClose: () => void }) {
+-  const sections: { title: string; content: string }[] = []
+-  const skillsIdx = prompt.indexOf('\n## Teacher-Configured Skills')
+-  const challengeIdx = prompt.indexOf('\n## Challenge Mode Instructions')
+-  const profileIdx = prompt.search(/\n## Student (Knowledge Profile|Profile)/)
+-
+-  const cut = (start: number, end: number) =>
+-    prompt.slice(start, end === -1 ? undefined : end).trim()
+-
+-  const baseEnd = skillsIdx !== -1 ? skillsIdx : challengeIdx !== -1 ? challengeIdx : profileIdx !== -1 ? profileIdx : -1
+-  sections.push({ title: '基础指令', content: cut(0, baseEnd) })
+-
+-  if (skillsIdx !== -1) {
+-    const skillsEnd = challengeIdx !== -1 && challengeIdx > skillsIdx ? challengeIdx : profileIdx !== -1 && profileIdx > skillsIdx ? profileIdx : -1
+-    sections.push({ title: 'Teacher Skills', content: cut(skillsIdx, skillsEnd) })
+-  }
+-  if (challengeIdx !== -1) {
+-    const challengeEnd = profileIdx !== -1 && profileIdx > challengeIdx ? profileIdx : -1
+-    sections.push({ title: '挑战模式指令', content: cut(challengeIdx, challengeEnd) })
+-  }
+-  if (profileIdx !== -1) {
+-    sections.push({ title: '学生画像', content: cut(profileIdx, -1) })
+-  }
+-
+-  return (
+-    <div style={modalStyles.overlay} onClick={onClose}>
+-      <div style={modalStyles.box} onClick={e => e.stopPropagation()}>
+-        <div style={modalStyles.header}>
+-          <span style={modalStyles.title}>完整系统提示词</span>
+-          <button style={modalStyles.closeBtn} onClick={onClose}>✕</button>
+-        </div>
+-        <div style={modalStyles.body}>
+-          {sections.map((s, i) => (
+-            <div key={i} style={modalStyles.section}>
+-              <div style={modalStyles.sectionTitle}>{s.title}</div>
+-              <pre style={modalStyles.pre}>{s.content}</pre>
+-            </div>
+-          ))}
+-        </div>
+-      </div>
+-    </div>
+-  )
+-}
+-
+ function parseCitationsFromPrompt(prompt: string): Citation[] {
+   const refIdx = prompt.indexOf('## 参考教材')
+   if (refIdx === -1) return []
+@@ -106,13 +63,15 @@ export default function StudentChat() {
+   const [stage, setStage] = useState<Stage>(() =>
+     localStorage.getItem('student_token') ? 'chatting' : 'unregistered'
+   )
++  const [authTab, setAuthTab] = useState<AuthTab>('login')
+   const [name, setName] = useState(() => localStorage.getItem('student_name') || '')
+   const [nameInput, setNameInput] = useState('')
++  const [passwordInput, setPasswordInput] = useState('')
++  const [confirmPasswordInput, setConfirmPasswordInput] = useState('')
+   const [messages, setMessages] = useState<Message[]>([])
+   const [input, setInput] = useState('')
+   const [loading, setLoading] = useState(false)
+   const [loginError, setLoginError] = useState('')
+-  const [viewingPrompt, setViewingPrompt] = useState<string | null>(null)
+   const [challenge, setChallenge] = useState<ChallengeState | null>(null)
+   const [hasActiveChallenge, setHasActiveChallenge] = useState(false)
+   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null)
+@@ -121,6 +80,16 @@ export default function StudentChat() {
+   const [isDragging, setIsDragging] = useState(false)
+   const bottomRef = useRef<HTMLDivElement>(null)
+   const fileInputRef = useRef<HTMLInputElement>(null)
++  const [sessions, setSessions] = useState<StudentSession[]>([])
++  const [sidebarOpen, setSidebarOpen] = useState(false)
++
++  // Change password modal state
++  const [pwModalOpen, setPwModalOpen] = useState(false)
++  const [pwCurrent, setPwCurrent] = useState('')
++  const [pwNew, setPwNew] = useState('')
++  const [pwConfirm, setPwConfirm] = useState('')
++  const [pwError, setPwError] = useState('')
++  const [pwLoading, setPwLoading] = useState(false)
+ 
+   useEffect(() => {
+     const prev = document.title
+@@ -139,6 +108,10 @@ export default function StudentChat() {
+     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+   }, [messages])
+ 
++  useEffect(() => {
++    if (sidebarOpen && stage === 'chatting') loadSessions()
++  }, [sidebarOpen])
++
+   async function loadHistory(session_id?: number) {
+     try {
+       const res = await studentHistory(session_id)
+@@ -155,8 +128,7 @@ export default function StudentChat() {
+     }
+   }
+ 
+-  async function checkActiveChallenge() {
+-    try {
++  async function checkActiveChallenge() {    try {
+       const res = await getActiveChallenge()
+       setHasActiveChallenge(!!res.data)
+     } catch {
+@@ -164,24 +136,92 @@ export default function StudentChat() {
+     }
+   }
+ 
++  async function loadSessions() {
++    try {
++      const res = await studentListSessions()
++      setSessions(res.data)
++    } catch {
++      // ignore
++    }
++  }
++
++  async function handleSelectSession(sessionId: number) {
++    setCurrentSessionId(sessionId)
++    setSidebarOpen(false)
++    await loadHistory(sessionId)
++  }
++
+   async function handleLogin() {
+     const trimmed = nameInput.trim()
+     if (!trimmed) return
+     setLoginError('')
+     setLoading(true)
+     try {
+-      const res = await studentLogin(trimmed)
++      const res = await studentLogin(trimmed, passwordInput || undefined)
+       localStorage.setItem('student_token', res.data.access_token)
+       localStorage.setItem('student_name', res.data.name)
+       setName(res.data.name)
++      setPasswordInput('')
+       setStage('chatting')
+-    } catch {
+-      setLoginError('登录失败，请重试')
++    } catch (err: any) {
++      setLoginError(err?.response?.data?.detail || '登录失败，请重试')
++    } finally {
++      setLoading(false)
++    }
++  }
++
++  async function handleRegister() {
++    const trimmed = nameInput.trim()
++    if (!trimmed) return
++    if (passwordInput.length < 6) {
++      setLoginError('密码至少需要 6 位')
++      return
++    }
++    if (passwordInput !== confirmPasswordInput) {
++      setLoginError('两次输入的密码不一致')
++      return
++    }
++    setLoginError('')
++    setLoading(true)
++    try {
++      const res = await studentRegister(trimmed, passwordInput)
++      localStorage.setItem('student_token', res.data.access_token)
++      localStorage.setItem('student_name', res.data.name)
++      setName(res.data.name)
++      setPasswordInput('')
++      setConfirmPasswordInput('')
++      setStage('chatting')
++    } catch (err: any) {
++      setLoginError(err?.response?.data?.detail || '注册失败，请重试')
+     } finally {
+       setLoading(false)
+     }
+   }
+ 
++  async function handleChangePassword() {
++    if (pwNew.length < 6) {
++      setPwError('新密码至少需要 6 位')
++      return
++    }
++    if (pwNew !== pwConfirm) {
++      setPwError('两次输入的密码不一致')
++      return
++    }
++    setPwError('')
++    setPwLoading(true)
++    try {
++      await studentChangePassword(pwCurrent, pwNew)
++      setPwModalOpen(false)
++      setPwCurrent('')
++      setPwNew('')
++      setPwConfirm('')
++    } catch (err: any) {
++      setPwError(err?.response?.data?.detail || '修改失败，请重试')
++    } finally {
++      setPwLoading(false)
++    }
++  }
++
+   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+     const file = e.target.files?.[0]
+     if (!e.target.files) return
+@@ -291,12 +331,16 @@ export default function StudentChat() {
+     localStorage.removeItem('student_name')
+     setMessages([])
+     setNameInput('')
++    setPasswordInput('')
++    setConfirmPasswordInput('')
+     setName('')
+     setChallenge(null)
+     setHasActiveChallenge(false)
+     setCurrentSessionId(null)
+     setPendingFile(null)
+     setFileError('')
++    setSessions([])
++    setSidebarOpen(false)
+     setStage('unregistered')
+   }
+ 
+@@ -338,26 +382,57 @@ export default function StudentChat() {
+   }
+ 
+   if (stage === 'unregistered') {
++    const isLogin = authTab === 'login'
+     return (
+       <div style={styles.loginWrapper}>
+         <div style={styles.loginCard}>
+           <h2 style={styles.loginTitle}>ChAgent 课程助教</h2>
+-          <p style={styles.loginSubtitle}>输入你的姓名开始对话</p>
++          <div style={styles.tabBar}>
++            <button
++              style={{ ...styles.tabBtn, ...(isLogin ? styles.tabBtnActive : {}) }}
++              onClick={() => { setAuthTab('login'); setLoginError('') }}
++            >
++              登录
++            </button>
++            <button
++              style={{ ...styles.tabBtn, ...(!isLogin ? styles.tabBtnActive : {}) }}
++              onClick={() => { setAuthTab('register'); setLoginError('') }}
++            >
++              注册
++            </button>
++          </div>
+           <input
+             style={styles.loginInput}
+             placeholder="请输入姓名"
+             value={nameInput}
+             onChange={e => setNameInput(e.target.value)}
+-            onKeyDown={e => e.key === 'Enter' && handleLogin()}
+             autoFocus
+           />
++          <input
++            style={styles.loginInput}
++            type="password"
++            placeholder={isLogin ? '请输入密码' : '请设置密码（至少 6 位）'}
++            value={passwordInput}
++            onChange={e => setPasswordInput(e.target.value)}
++            onKeyDown={e => e.key === 'Enter' && (isLogin ? handleLogin() : handleRegister())}
++          />
++          {!isLogin && (
++            <input
++              style={styles.loginInput}
++              type="password"
++              placeholder="再次输入密码"
++              value={confirmPasswordInput}
++              onChange={e => setConfirmPasswordInput(e.target.value)}
++              onKeyDown={e => e.key === 'Enter' && handleRegister()}
++            />
++          )}
+           {loginError && <p style={styles.error}>{loginError}</p>}
+           <button
+             style={{ ...styles.loginBtn, opacity: loading ? 0.6 : 1 }}
+-            onClick={handleLogin}
++            onClick={isLogin ? handleLogin : handleRegister}
+             disabled={loading}
+           >
+-            {loading ? '登录中...' : '开始对话'}
++            {loading ? (isLogin ? '登录中...' : '注册中...') : (isLogin ? '登录' : '注册')}
+           </button>
+         </div>
+       </div>
+@@ -368,6 +443,42 @@ export default function StudentChat() {
+ 
+   return (
+     <>
++      {/* Session history sidebar */}
++      {sidebarOpen && !challenge && (
++        <>
++          <div style={sidebarStyles.backdrop} onClick={() => setSidebarOpen(false)} />
++          <div style={sidebarStyles.panel}>
++            <div style={sidebarStyles.header}>
++              <span style={sidebarStyles.title}>历史对话</span>
++              <button style={sidebarStyles.closeBtn} onClick={() => setSidebarOpen(false)}>✕</button>
++            </div>
++            <div style={sidebarStyles.list}>
++              {sessions.length === 0 ? (
++                <p style={sidebarStyles.empty}>暂无对话记录</p>
++              ) : sessions.map(s => (
++                <div
++                  key={s.id}
++                  style={{
++                    ...sidebarStyles.item,
++                    ...(s.id === currentSessionId ? sidebarStyles.itemActive : {}),
++                  }}
++                  onClick={() => handleSelectSession(s.id)}
++                >
++                  <div style={sidebarStyles.itemDate}>
++                    {formatSessionDate(s.started_at)}
++                    {s.mode === 'challenge' && <span style={sidebarStyles.modeBadge}>⚡挑战</span>}
++                  </div>
++                  {s.last_message && (
++                    <div style={sidebarStyles.itemPreview}>{s.last_message}</div>
++                  )}
++                  <div style={sidebarStyles.itemCount}>{s.message_count} 条消息</div>
++                </div>
++              ))}
++            </div>
++          </div>
++        </>
++      )}
++
+       <div
+         style={{ ...styles.chatWrapper, ...(isDragging ? styles.chatWrapperDragging : {}) }}
+         onDragOver={handleDragOver}
+@@ -395,6 +506,9 @@ export default function StudentChat() {
+             </>
+           ) : (
+             <>
++              <button style={styles.historyBtn} onClick={() => setSidebarOpen(o => !o)} title="查看历史对话">
++                📜 历史
++              </button>
+               <button style={styles.newSessionBtn} onClick={handleNewSession} disabled={loading} title="清空当前对话，开启新会话">
+                 + 新对话
+               </button>
+@@ -408,7 +522,8 @@ export default function StudentChat() {
+               </button>
+             </>
+           )}
+-          <button style={styles.switchBtn} onClick={handleSwitchName}>换个姓名</button>
++          <button style={styles.switchBtn} onClick={handleSwitchName}>换个账号</button>
++          <button style={styles.switchBtn} onClick={() => { setPwError(''); setPwModalOpen(true) }}>修改密码</button>
+         </div>
+ 
+         {/* Message list */}
+@@ -433,15 +548,6 @@ export default function StudentChat() {
+                     </ReactMarkdown>
+                   )}
+                 </div>
+-                {msg.role === 'assistant' && msg.system_prompt && (
+-                  <button
+-                    style={styles.promptBtn}
+-                    onClick={() => setViewingPrompt(msg.system_prompt!)}
+-                    title="查看提交给模型的完整请求"
+-                  >
+-                    完整请求
+-                  </button>
+-                )}
+                 {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
+                   <CitationsPanel citations={msg.citations} />
+                 )}
+@@ -509,8 +615,53 @@ export default function StudentChat() {
+         </div>
+       </div>
+ 
+-      {viewingPrompt && (
+-        <SystemPromptModal prompt={viewingPrompt} onClose={() => setViewingPrompt(null)} />
++      {/* Change password modal */}
++      {pwModalOpen && (
++        <>
++          <div style={modalStyles.backdrop} onClick={() => setPwModalOpen(false)} />
++          <div style={modalStyles.box}>
++            <div style={modalStyles.header}>
++              <span style={modalStyles.title}>修改密码</span>
++              <button style={modalStyles.closeBtn} onClick={() => setPwModalOpen(false)}>✕</button>
++            </div>
++            <div style={modalStyles.body}>
++              <label style={modalStyles.label}>当前密码</label>
++              <input
++                style={modalStyles.input}
++                type="password"
++                placeholder="当前密码"
++                value={pwCurrent}
++                onChange={e => setPwCurrent(e.target.value)}
++                autoFocus
++              />
++              <label style={modalStyles.label}>新密码</label>
++              <input
++                style={modalStyles.input}
++                type="password"
++                placeholder="至少 6 位"
++                value={pwNew}
++                onChange={e => setPwNew(e.target.value)}
++              />
++              <label style={modalStyles.label}>确认新密码</label>
++              <input
++                style={modalStyles.input}
++                type="password"
++                placeholder="再次输入新密码"
++                value={pwConfirm}
++                onChange={e => setPwConfirm(e.target.value)}
++                onKeyDown={e => e.key === 'Enter' && handleChangePassword()}
++              />
++              {pwError && <p style={modalStyles.error}>{pwError}</p>}
++              <button
++                style={{ ...modalStyles.btn, opacity: pwLoading ? 0.6 : 1 }}
++                onClick={handleChangePassword}
++                disabled={pwLoading}
++              >
++                {pwLoading ? '修改中...' : '确认修改'}
++              </button>
++            </div>
++          </div>
++        </>
+       )}
+     </>
+   )
+@@ -568,6 +719,9 @@ const styles: Record<string, React.CSSProperties> = {
+   loginCard: { background: '#fff', borderRadius: 12, padding: '40px 48px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', width: 360, display: 'flex', flexDirection: 'column', gap: 16 },
+   loginTitle: { margin: 0, fontSize: 24, fontWeight: 700, textAlign: 'center' },
+   loginSubtitle: { margin: 0, color: '#666', textAlign: 'center', fontSize: 14 },
++  tabBar: { display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid #d9d9d9' },
++  tabBtn: { flex: 1, padding: '8px 0', fontSize: 14, fontWeight: 500, background: '#fff', border: 'none', cursor: 'pointer', color: '#666', transition: 'background 0.15s' },
++  tabBtnActive: { background: '#1677ff', color: '#fff' },
+   loginInput: { padding: '10px 14px', fontSize: 15, border: '1px solid #d9d9d9', borderRadius: 8, outline: 'none' },
+   loginBtn: { padding: '10px 0', fontSize: 15, background: '#1677ff', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
+   error: { margin: 0, color: '#ff4d4f', fontSize: 13 },
+@@ -579,6 +733,7 @@ const styles: Record<string, React.CSSProperties> = {
+   headerName: { fontWeight: 600, fontSize: 16, marginRight: 4 },
+   challengeBadge: { background: '#fff7e6', color: '#d46b08', border: '1px solid #ffd591', borderRadius: 12, padding: '2px 12px', fontSize: 13, fontWeight: 600 },
+   newSessionBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
++  historyBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
+   challengeBtn: { background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+   exitChallengeBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666' },
+   switchBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666', marginLeft: 'auto' },
+@@ -612,14 +767,36 @@ const citationStyles: Record<string, React.CSSProperties> = {
+   itemText: { fontSize: 12, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+ }
+ 
++function formatSessionDate(iso: string): string {
++  const d = new Date(iso)
++  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
++}
++
+ const modalStyles: Record<string, React.CSSProperties> = {
+-  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 },
+-  box: { background: '#fff', borderRadius: 12, width: '100%', maxWidth: 720, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 40px rgba(0,0,0,0.2)' },
++  backdrop: { position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.35)' },
++  box: { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 201, background: '#fff', borderRadius: 12, width: 340, boxShadow: '0 8px 32px rgba(0,0,0,0.18)' },
+   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #f0f0f0' },
+-  title: { fontWeight: 700, fontSize: 15 },
++  title: { fontWeight: 600, fontSize: 16 },
++  closeBtn: { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#888', lineHeight: 1 },
++  body: { padding: '20px', display: 'flex', flexDirection: 'column', gap: 10 },
++  label: { fontSize: 13, color: '#555', fontWeight: 500 },
++  input: { padding: '9px 12px', fontSize: 14, border: '1px solid #d9d9d9', borderRadius: 7, outline: 'none' },
++  error: { margin: 0, color: '#ff4d4f', fontSize: 13 },
++  btn: { marginTop: 4, padding: '10px 0', fontSize: 15, background: '#1677ff', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 },
++}
++
++const sidebarStyles: Record<string, React.CSSProperties> = {
++  backdrop: { position: 'fixed', inset: 0, zIndex: 99, background: 'rgba(0,0,0,0.15)' },
++  panel: { position: 'fixed', left: 0, top: 0, width: 260, height: '100vh', background: '#fff', zIndex: 100, display: 'flex', flexDirection: 'column', boxShadow: '4px 0 16px rgba(0,0,0,0.12)' },
++  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 16px', borderBottom: '1px solid #f0f0f0', flexShrink: 0 },
++  title: { fontWeight: 600, fontSize: 15 },
+   closeBtn: { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#888', lineHeight: 1 },
+-  body: { overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 16 },
+-  section: { display: 'flex', flexDirection: 'column', gap: 6 },
+-  sectionTitle: { fontSize: 12, fontWeight: 600, color: '#1677ff', textTransform: 'uppercase', letterSpacing: 1 },
+-  pre: { margin: 0, background: '#f6f8fa', borderRadius: 8, padding: '12px 14px', fontSize: 12, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#333', border: '1px solid #e8e8e8', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace' },
++  list: { flex: 1, overflowY: 'auto' },
++  empty: { textAlign: 'center', color: '#bbb', padding: '24px 16px', margin: 0, fontSize: 13 },
++  item: { padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', borderLeft: '3px solid transparent' },
++  itemActive: { background: '#e6f4ff', borderLeft: '3px solid #1677ff' },
++  itemDate: { fontSize: 12, color: '#888', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 },
++  itemPreview: { fontSize: 13, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 },
++  itemCount: { fontSize: 11, color: '#bbb' },
++  modeBadge: { background: '#fff7e6', color: '#d46b08', border: '1px solid #ffd591', borderRadius: 4, padding: '0 4px', fontSize: 11 },
+ }
+diff --git a/frontend/src/pages/Students.tsx b/frontend/src/pages/Students.tsx
+index 0990fa0..79ef1d0 100644
+--- a/frontend/src/pages/Students.tsx
++++ b/frontend/src/pages/Students.tsx
+@@ -1,9 +1,10 @@
+ import { useEffect, useState } from 'react'
+-import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip, Tag } from 'antd'
+-import { EyeOutlined, ControlOutlined, SyncOutlined } from '@ant-design/icons'
++import { Table, Button, Typography, Input, Space, Modal, InputNumber, Progress, message, Tooltip, Tag, Badge, Dropdown } from 'antd'
++import { EyeOutlined, ControlOutlined, SyncOutlined, DownOutlined } from '@ant-design/icons'
+ import {
+   getStudents, setStudentLimit, getStudentConversations,
+   triggerAllProfileUpdates, triggerStudentProfileUpdate,
++  getProfileUpdateStatus,
+   type Student, type Conversation,
+ } from '../api'
+ import StudentProfileDrawer from '../components/StudentProfileDrawer'
+@@ -17,6 +18,7 @@ export default function Students() {
+   const [conversations, setConversations] = useState<Conversation[]>([])
+   const [drawerOpen, setDrawerOpen] = useState(false)
+   const [updatingAll, setUpdatingAll] = useState(false)
++  const [updateStatus, setUpdateStatus] = useState<{ total: number; needs_update: number } | null>(null)
+ 
+   // Limit modal state
+   const [limitStudent, setLimitStudent] = useState<Student | null>(null)
+@@ -30,7 +32,16 @@ export default function Students() {
+       .finally(() => setLoading(false))
+   }
+ 
+-  useEffect(fetchStudents, [])
++  const fetchUpdateStatus = () => {
++    getProfileUpdateStatus()
++      .then((res) => setUpdateStatus(res.data))
++      .catch(() => {})
++  }
++
++  useEffect(() => {
++    fetchStudents()
++    fetchUpdateStatus()
++  }, [])
+ 
+   const openDrawer = async (student: Student) => {
+     setSelectedStudent(student)
+@@ -44,11 +55,12 @@ export default function Students() {
+     setLimitValue(student.daily_token_limit ?? null)
+   }
+ 
+-  const handleUpdateAll = async () => {
++  const handleUpdateAll = async (force = false) => {
+     setUpdatingAll(true)
+     try {
+-      await triggerAllProfileUpdates()
+-      message.success('所有学生画像更新任务已启动，稍后完成')
++      await triggerAllProfileUpdates(force)
++      message.success(force ? '强制更新全部画像任务已启动' : '智能更新画像任务已启动（仅更新有新对话的学生）')
++      fetchUpdateStatus()
+     } catch {
+       message.error('启动失败')
+     } finally {
+@@ -107,6 +119,21 @@ export default function Students() {
+         return style ? <span>{style}</span> : <span style={{ color: '#bbb' }}>—</span>
+       },
+     },
++    {
++      title: '画像更新',
++      key: 'profile_updated',
++      width: 160,
++      render: (_: unknown, record: Student) => {
++        const timeText = record.profile_updated_at
++          ? dayjs(record.profile_updated_at).format('MM-DD HH:mm')
++          : '未更新'
++        return record.needs_profile_update ? (
++          <Badge color="orange" text={<span style={{ fontSize: 12 }}>{timeText}</span>} />
++        ) : (
++          <span style={{ fontSize: 12, color: '#888' }}>{timeText}</span>
++        )
++      },
++    },
+     {
+       title: '今日用量',
+       key: 'usage',
+@@ -176,13 +203,29 @@ export default function Students() {
+           学生管理
+         </Typography.Title>
+         <Space>
+-          <Button
+-            icon={<SyncOutlined spin={updatingAll} />}
++          <Dropdown.Button
++            icon={<DownOutlined />}
+             loading={updatingAll}
+-            onClick={handleUpdateAll}
++            onClick={() => handleUpdateAll(false)}
++            menu={{
++              items: [
++                {
++                  key: 'force',
++                  label: '强制更新全部',
++                  icon: <SyncOutlined />,
++                  onClick: () => handleUpdateAll(true),
++                },
++              ],
++            }}
+           >
++            <SyncOutlined spin={updatingAll} />
+             更新全部画像
+-          </Button>
++            {updateStatus && updateStatus.needs_update > 0 && (
++              <Tag color="orange" style={{ marginLeft: 6, fontSize: 11 }}>
++                需更新 {updateStatus.needs_update} 人
++              </Tag>
++            )}
++          </Dropdown.Button>
+           <Input.Search
+             placeholder="搜索学生姓名"
+             value={search}
+diff --git a/frontend/src/pages/Textbooks.tsx b/frontend/src/pages/Textbooks.tsx
+index c401297..a5a84e7 100644
+--- a/frontend/src/pages/Textbooks.tsx
++++ b/frontend/src/pages/Textbooks.tsx
+@@ -1,8 +1,8 @@
+ import { useState, useEffect, useRef } from 'react'
+-import { Table, Button, Upload, Input, Space, Tag, Typography, message, Popconfirm } from 'antd'
++import { Table, Button, Input, Space, Tag, Typography, message, Popconfirm } from 'antd'
+ import { UploadOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+ import type { ColumnsType } from 'antd/es/table'
+-import { getTextbooks, uploadTextbook, deleteTextbook, getTextbook, Textbook } from '../api'
++import { getTextbooks, uploadTextbook, deleteTextbook, Textbook } from '../api'
+ 
+ const STATUS_COLOR: Record<string, string> = {
+   pending: 'default',

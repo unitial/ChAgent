@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab: ARM64 启动故障排查 — 交互式终端回放</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0
+        }
+
+        :root {
+            --bg-deep: #0d1117;
+            --bg-terminal: #161b22;
+            --bg-commentary: #1a1f2b;
+            --bg-control: #010409;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-dim: #484f58;
+            --accent-green: #3fb950;
+            --accent-blue: #58a6ff;
+            --accent-red: #f85149;
+            --accent-yellow: #d29922;
+            --border: #30363d;
+            --glass: rgba(22, 27, 34, 0.7)
+        }
+
+        body,
+        html {
+            width: 100%;
+            height: 100%;
+            background: var(--bg-deep);
+            color: var(--text-primary);
+            font-family: 'Inter', system-ui, sans-serif;
+            overflow: hidden
+        }
+
+        .app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            width: 100vw
+        }
+
+        .header {
+            height: 48px;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            background: var(--bg-control);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0
+        }
+
+        .header-icon {
+            font-size: 18px;
+            margin-right: 12px
+        }
+
+        .header-title {
+            font-size: 15px;
+            font-weight: 600
+        }
+
+        .header-step-title {
+            margin-left: auto;
+            font-size: 14px;
+            color: var(--accent-blue);
+            font-weight: 600
+        }
+
+        .main-panels {
+            display: flex;
+            flex: 1;
+            overflow: hidden
+        }
+
+        .terminal-panel {
+            flex: 1.2;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border);
+            min-width: 0;
+            background: var(--bg-terminal)
+        }
+
+        .terminal-tab-bar {
+            display: flex;
+            align-items: flex-end;
+            padding: 0 16px;
+            height: 36px;
+            background: var(--bg-control);
+            border-bottom: 1px solid var(--border)
+        }
+
+        .terminal-tab {
+            padding: 6px 16px;
+            background: var(--bg-terminal);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            position: relative;
+            top: 1px
+        }
+
+        .terminal-tab .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green)
+        }
+
+        .terminal-content {
+            flex: 1;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            overflow-y: auto;
+            color: var(--text-primary)
+        }
+
+        .terminal-content::-webkit-scrollbar {
+            width: 8px
+        }
+
+        .terminal-content::-webkit-scrollbar-track {
+            background: transparent
+        }
+
+        .terminal-content::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px
+        }
+
+        .term-line {
+            white-space: pre-wrap;
+            word-break: break-all
+        }
+
+        .term-prompt {
+            color: var(--accent-green);
+            font-weight: 700
+        }
+
+        .term-command {
+            color: #f0f6fc
+        }
+
+        .term-output {
+            color: var(--text-secondary)
+        }
+
+        .term-highlight {
+            color: var(--accent-yellow);
+            font-weight: 700
+        }
+
+        .term-error {
+            color: var(--accent-red);
+            font-weight: 700
+        }
+
+        .term-info {
+            color: var(--accent-blue)
+        }
+
+        .term-diff-add {
+            color: var(--accent-green)
+        }
+
+        .term-diff-del {
+            color: var(--accent-red)
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 15px;
+            background: var(--text-secondary);
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+            margin-left: 1px
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0
+            }
+        }
+
+        .term-fade-in {
+            animation: termFadeIn .4s ease-out
+        }
+
+        @keyframes termFadeIn {
+            from {
+                opacity: 0
+            }
+
+            to {
+                opacity: 1
+            }
+        }
+
+        .commentary-panel {
+            flex: .9;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            border-right: 1px solid var(--border);
+            background: var(--bg-commentary)
+        }
+
+        .commentary-tab-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg-commentary);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-secondary)
+        }
+
+        .commentary-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px
+        }
+
+        .commentary-content::-webkit-scrollbar {
+            width: 6px
+        }
+
+        .commentary-content::-webkit-scrollbar-track {
+            background: transparent
+        }
+
+        .commentary-content::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px
+        }
+
+        .comment-block {
+            margin-bottom: 20px;
+            padding: 16px 20px;
+            background: var(--glass);
+            border-radius: 10px;
+            border-left: 3px solid var(--border);
+            opacity: .15;
+            transition: opacity .5s, border-color .5s, transform .4s;
+            transform: translateY(4px) scale(.98)
+        }
+
+        .comment-block.active {
+            opacity: 1;
+            border-left-color: var(--accent-blue);
+            transform: translateY(0) scale(1)
+        }
+
+        .comment-block.past {
+            opacity: .35;
+            border-left-color: var(--text-dim);
+            transform: translateY(0) scale(1)
+        }
+
+        .comment-step-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            text-transform: uppercase;
+            letter-spacing: .5px;
+            margin-bottom: 6px
+        }
+
+        .comment-block.past .comment-step-badge {
+            color: var(--text-dim)
+        }
+
+        .comment-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 10px
+        }
+
+        .comment-body {
+            font-size: 14px;
+            line-height: 1.8;
+            color: #c9d1d9
+        }
+
+        .comment-body p {
+            margin-bottom: 10px
+        }
+
+        .comment-body strong {
+            color: var(--text-primary);
+            font-weight: 700
+        }
+
+        .comment-body code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            background: rgba(110, 118, 129, .2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--accent-yellow)
+        }
+
+        .comment-body .thinking {
+            color: var(--text-secondary);
+            font-style: italic
+        }
+
+        .comment-body .insight {
+            display: block;
+            margin: 10px 0;
+            padding: 10px 14px;
+            background: rgba(56, 139, 253, .08);
+            border-left: 3px solid var(--accent-blue);
+            border-radius: 0 6px 6px 0;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-style: normal
+        }
+
+        .comment-body .warning {
+            display: block;
+            margin: 10px 0;
+            padding: 10px 14px;
+            background: rgba(248, 81, 73, .08);
+            border-left: 3px solid var(--accent-red);
+            border-radius: 0 6px 6px 0;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-style: normal
+        }
+
+        .comment-body .conclusion {
+            display: block;
+            margin: 10px 0;
+            padding: 10px 14px;
+            background: rgba(63, 185, 80, .08);
+            border-left: 3px solid var(--accent-green);
+            border-radius: 0 6px 6px 0;
+            color: var(--text-primary);
+            font-size: 13px;
+            font-style: normal
+        }
+
+        .comment-body details {
+            margin: 12px 0;
+            background: rgba(13, 17, 23, .5);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden
+        }
+
+        .comment-body summary {
+            padding: 10px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            cursor: pointer;
+            user-select: none;
+            background: rgba(255, 255, 255, .03);
+            transition: background .2s;
+            outline: none
+        }
+
+        .comment-body summary:hover {
+            background: rgba(255, 255, 255, .08)
+        }
+
+        .comment-body details[open] summary {
+            border-bottom: 1px solid var(--border);
+            background: rgba(255, 255, 255, .05)
+        }
+
+        .comment-body .details-content {
+            padding: 12px 14px;
+            font-size: 12.5px;
+            line-height: 1.6;
+            color: var(--text-secondary)
+        }
+
+        .chat-panel {
+            flex: .85;
+            display: flex;
+            flex-direction: column;
+            min-width: 280px;
+            background: var(--bg-commentary)
+        }
+
+        .chat-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--bg-commentary);
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary)
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            background: var(--glass)
+        }
+
+        .chat-messages::-webkit-scrollbar {
+            width: 6px
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: transparent
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px
+        }
+
+        .chat-msg {
+            display: flex;
+            flex-direction: column;
+            max-width: 90%;
+            font-size: 13px;
+            line-height: 1.5
+        }
+
+        .chat-msg.user {
+            align-self: flex-end
+        }
+
+        .chat-msg.ai {
+            align-self: flex-start
+        }
+
+        .chat-bubble {
+            padding: 10px 14px;
+            border-radius: 12px
+        }
+
+        .chat-msg.user .chat-bubble {
+            background: var(--accent-blue);
+            color: #fff;
+            border-bottom-right-radius: 2px
+        }
+
+        .chat-msg.ai .chat-bubble {
+            background: var(--bg-terminal);
+            color: var(--text-primary);
+            border-bottom-left-radius: 2px;
+            border: 1px solid var(--border)
+        }
+
+        .chat-input-area {
+            padding: 12px;
+            background: var(--bg-commentary);
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 8px
+        }
+
+        .chat-input {
+            flex: 1;
+            background: var(--bg-terminal);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            outline: none;
+            font-family: inherit
+        }
+
+        .chat-input:focus {
+            border-color: var(--accent-blue)
+        }
+
+        .chat-send-btn {
+            background: var(--accent-blue);
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            width: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: opacity .2s
+        }
+
+        .chat-send-btn:hover {
+            opacity: .8
+        }
+
+        .chat-link {
+            color: var(--accent-yellow);
+            cursor: pointer;
+            text-decoration: underline dashed;
+            text-underline-offset: 4px;
+            font-weight: 500;
+            transition: opacity .2s
+        }
+
+        .chat-link:hover {
+            opacity: .8
+        }
+
+        .typing-dots {
+            display: flex;
+            gap: 4px;
+            padding: 4px 2px
+        }
+
+        .typing-dots span {
+            width: 6px;
+            height: 6px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            animation: typing 1.4s infinite ease-in-out both
+        }
+
+        .typing-dots span:nth-child(1) {
+            animation-delay: -.32s
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: -.16s
+        }
+
+        @keyframes typing {
+
+            0%,
+            80%,
+            100% {
+                transform: scale(0)
+            }
+
+            40% {
+                transform: scale(1)
+            }
+        }
+
+        .control-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 20px;
+            background: var(--bg-control);
+            border-top: 1px solid var(--border);
+            flex-shrink: 0
+        }
+
+        .ctrl-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 16px;
+            cursor: pointer;
+            transition: background .2s, transform .1s;
+            user-select: none
+        }
+
+        .ctrl-btn:hover {
+            background: rgba(255, 255, 255, .1)
+        }
+
+        .ctrl-btn:active {
+            transform: scale(.92)
+        }
+
+        .ctrl-btn.play-btn {
+            width: 44px;
+            height: 44px;
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: #000;
+            font-size: 18px;
+            border-radius: 50%
+        }
+
+        .ctrl-btn.play-btn:hover {
+            background: #46d160
+        }
+
+        .progress-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 10px
+        }
+
+        .progress-bar {
+            flex: 1;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            cursor: pointer;
+            position: relative
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+            border-radius: 3px;
+            transition: width .3s;
+            position: relative
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            right: -6px;
+            top: -5px;
+            width: 16px;
+            height: 16px;
+            background: var(--accent-blue);
+            border-radius: 50%;
+            border: 2px solid var(--bg-control);
+            box-shadow: 0 0 8px rgba(88, 166, 255, .4)
+        }
+
+        .progress-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            min-width: 80px;
+            font-family: 'JetBrains Mono', monospace
+        }
+
+        .speed-btn {
+            padding: 4px 10px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: 'JetBrains Mono', monospace;
+            transition: all .2s
+        }
+
+        .speed-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--accent-blue)
+        }
+
+        .shortcuts-hint {
+            font-size: 11px;
+            color: var(--text-dim);
+            display: flex;
+            gap: 8px
+        }
+
+        .shortcuts-hint kbd {
+            display: inline-block;
+            padding: 1px 5px;
+            background: var(--glass);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px
+        }
+
+        .splash-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(13, 17, 23, .92);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: opacity .5s
+        }
+
+        .splash-overlay.hidden {
+            opacity: 0;
+            pointer-events: none
+        }
+
+        .hardware-photo {
+            width: 100%;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .5)
+        }
+
+        .splash-card {
+            text-align: center;
+            max-width: 530px;
+            padding: 30px
+        }
+
+        .splash-card h1 {
+            font-size: 26px;
+            margin-bottom: 12px;
+            background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent
+        }
+
+        .splash-card p {
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 24px;
+            font-size: 15px
+        }
+
+        .splash-start-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 32px;
+            background: var(--accent-green);
+            color: #000;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform .15s, box-shadow .2s
+        }
+
+        .splash-start-btn:hover {
+            transform: scale(1.04);
+            box-shadow: 0 0 30px rgba(63, 185, 80, .3)
+        }
+
+        .act-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .5px;
+            margin-bottom: 8px
+        }
+
+        .act-1 {
+            background: rgba(63, 185, 80, .15);
+            color: var(--accent-green)
+        }
+
+        .act-2 {
+            background: rgba(248, 81, 73, .15);
+            color: var(--accent-red)
+        }
+
+        .act-3 {
+            background: rgba(88, 166, 255, .15);
+            color: var(--accent-blue)
+        }
+
+        .act-4 {
+            background: rgba(210, 153, 34, .15);
+            color: var(--accent-yellow)
+        }
+    </style>
+</head>
+
+<body>
+    <div class="splash-overlay" id="splash">
+        <div class="splash-card">
+            <img src="lab_splash.png" class="hardware-photo" alt="Lab 环境">
+            <h1>🧪 Lab: ARM64 启动故障排查</h1>
+            <p>从"串口沉默"到找出真凶。<br>在 QEMU 中复现、诊断、修复 ARM64 内核启动故障。</p>
+            <button class="splash-start-btn" onclick="startPlayback()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                </svg>
+                开始 Lab
+            </button>
+        </div>
+    </div>
+    <div class="app">
+        <header class="header">
+            <span class="header-icon">🧪</span>
+            <span class="header-title">Lab: ARM64 启动故障排查</span>
+            <span class="header-step-title" id="headerStep"></span>
+        </header>
+        <div class="main-panels">
+            <div class="terminal-panel">
+                <div class="terminal-tab-bar">
+                    <div class="terminal-tab"><span class="dot"></span>Terminal</div>
+                </div>
+                <div class="terminal-content" id="terminal"></div>
+            </div>
+            <div class="commentary-panel">
+                <div class="commentary-tab-bar">💬 Lab 引导</div>
+                <div class="commentary-content" id="commentary"></div>
+            </div>
+            <div class="chat-panel">
+                <div class="chat-header">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <span>AI 助教答疑</span>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="chat-msg ai">
+                        <div class="chat-bubble">你好！我是这个 Lab 的 AI 助教。点击左侧带有虚线的<span class="chat-link"
+                                style="text-decoration:none">高亮关键词</span>，或直接在下方输入框向我提问。</div>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" class="chat-input" id="chatInput" placeholder="输入你想了解的内容..." autocomplete="off"
+                        onkeypress="if(event.key==='Enter')sendChatMessage()">
+                    <button class="chat-send-btn" onclick="sendChatMessage()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="control-bar">
+            <button class="ctrl-btn" onclick="player.prevStep()" title="上一步 (←)">⏮</button>
+            <button class="ctrl-btn play-btn" id="playBtn" onclick="player.togglePlay()"
+                title="播放/暂停 (Space)">▶</button>
+            <button class="ctrl-btn" onclick="player.nextStep()" title="下一步 (→)">⏭</button>
+            <div class="progress-container">
+                <div class="progress-bar" id="progressBar" onclick="player.seekFromClick(event)">
+                    <div class="progress-fill" id="progressFill" style="width:0%"></div>
+                </div>
+                <span class="progress-label" id="progressLabel">0 / 0</span>
+            </div>
+            <button class="speed-btn" id="speedBtn" onclick="player.cycleSpeed()">1x</button>
+            <div class="shortcuts-hint"><span><kbd>Space</kbd> 播放</span><span><kbd>←</kbd><kbd>→</kbd> 切换</span></div>
+        </div>
+    </div>
+    <script>
+        // ===== Chat =====
+        function sendChatMessage(t) { const i = document.getElementById('chatInput'); const text = t || i.value.trim(); if (!text) return; appendMsg('user', text); if (!t) i.value = ''; showTyping(); setTimeout(() => aiReply(text), 600 + Math.random() * 800) }
+        function appendMsg(role, text) { const c = document.getElementById('chatMessages'); const t = document.getElementById('typingIndicator'); if (t) t.remove(); const d = document.createElement('div'); d.className = `chat-msg ${role}`; d.innerHTML = `<div class="chat-bubble">${text.replace(/\\n/g, '<br>')}</div>`; c.appendChild(d); c.scrollTop = c.scrollHeight }
+        function showTyping() { const c = document.getElementById('chatMessages'); const d = document.createElement('div'); d.className = 'chat-msg ai'; d.id = 'typingIndicator'; d.innerHTML = '<div class="chat-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>'; c.appendChild(d); c.scrollTop = c.scrollHeight }
+        function aiReply(q) {
+            let r = "这是模拟回复。真实环境可接入 LLM API 深度解答。";
+            if (q.includes("设备树") || q.includes("DTB") || q.includes("dtb")) r = "设备树 (Device Tree Blob, .dtb) 是一个二进制数据结构，描述了硬件板上每个设备的类型、地址、中断号等信息。ARM64 Linux 内核在启动时解析设备树来了解硬件配置，而不是把硬件信息硬编码在内核中。这样同一个内核镜像就能在不同的板子上运行——只要有正确的 .dtb 文件。";
+            else if (q.includes("earlycon")) r = "earlycon 是 Linux 内核的早期控制台机制。在正式的串口驱动初始化之前，earlycon 通过硬编码的 MMIO 地址直接向串口寄存器写字符，不依赖设备树。所以即使设备树中的串口配置有误，earlycon 仍然能输出早期启动日志。当内核切换到正式的设备树驱动后，earlycon 停用。";
+            else if (q.includes("MMIO")) r = "MMIO (Memory-Mapped I/O) 是将硬件设备的寄存器映射到 CPU 物理地址空间的机制。CPU 用普通的 load/store 指令访问特定地址，就等于在读写硬件设备的寄存器。ARM64 只使用 MMIO，不像 x86 还有 Port I/O (in/out 指令)。";
+            else if (q.includes("GDB") || q.includes("gdb")) r = "GDB (GNU Debugger) 是最常用的调试器。在嵌入式场景中，GDB 通过远程调试协议 (target remote) 连接到目标设备的调试服务器（JTAG/OpenOCD 或 QEMU 内置的 GDB server）。连接后可以暂停 CPU、查看寄存器、设置断点、单步执行等。";
+            else if (q.includes("CurrentEL") || q.includes("异常级别") || q.includes("EL")) r = "ARM64 有四个异常级别：EL0（用户态）、EL1（内核态）、EL2（Hypervisor）、EL3（安全监控）。CurrentEL 寄存器的 Bit[3:2] 存储当前级别：0x4=EL1, 0x8=EL2, 0xC=EL3。Linux 内核运行在 EL1。";
+            else if (q.includes("MMU")) r = "MMU (Memory Management Unit) 负责将虚拟地址翻译为物理地址。内核刚启动时 MMU 关闭，PC 指向物理地址（如 0x40000000）。内核建立页表后开启 MMU，PC 切换到虚拟地址空间（0xffff... 开头）。看到虚拟地址说明内核已完成最危险的早期初始化。";
+            else if (q.includes("compatible")) r = "compatible 属性是设备树中最重要的字段，它是设备和驱动之间的'匹配密钥'。内核启动时遍历设备树节点，用 compatible 字符串去匹配已注册的驱动。如果 compatible 拼错或写了不存在的值，没有驱动会认领该设备——硬件就'隐形'了。";
+            else if (q.includes("PL011") || q.includes("pl011")) r = "PL011 是 ARM 公司设计的 UART IP 核（PrimeCell），常见于 QEMU virt 平台和许多 ARM SoC。它的 Linux 驱动是 amba-pl011，匹配 compatible=\"arm,pl011\"。与 16550 (x86 常用) 的寄存器布局完全不同。";
+            else if (q.includes("DECERR") || q.includes("External Abort") || q.includes("abort")) r = "当 ARM CPU 通过总线访问一个没有设备响应的地址时，总线控制器会返回 DECERR (Decode Error)，CPU 据此触发 Synchronous External Abort 异常。这与 x86 PCI 总线默默返回 0xFFFFFFFF 的行为截然不同——ARM 更严格，直接报错导致内核 panic。";
+            else if (q.includes("dtc")) r = "dtc (Device Tree Compiler) 是设备树的编译/反编译工具。dtc -I dts -O dtb 将可读的 .dts 文本编译为二进制 .dtb；dtc -I dtb -O dts 则反编译。在排障时常用反编译来查看 DTB 内容。";
+            else if (q.includes("virt") || q.includes("QEMU")) r = "QEMU 的 virt 是一个通用 ARM64 虚拟平台，支持 PL011 UART、GICv2/v3 中断控制器等标准设备。它可以用 -M virt,dumpdtb=file.dtb 导出自动生成的设备树。-s 选项启动内置 GDB server（端口 1234），-S 让 CPU 启动后暂停等待调试器。";
+            else if (q.includes("Panic") || q.includes("panic")) r = "Kernel Panic 是 Linux 内核遇到不可恢复错误时的最后手段。它会冻结系统防止数据损坏。常见触发原因：空指针解引用、硬件异常(External Abort)、找不到 init 进程等。Panic 信息会写入 log_buf，即使串口没输出，也能通过 GDB 读取。";
+            appendMsg('ai', r);
+        }
+        function setupChatLinks() { document.querySelectorAll('.chat-link:not([data-bound])').forEach(l => { l.dataset.bound = 'true'; l.addEventListener('click', e => sendChatMessage(`请详细解释一下：${e.target.innerText}`)) }) }
+
+        // ===== STEPS =====
+        const STEPS = [
+            {
+                title: "📋 Lab 概述", terminal: null,
+                commentary: `<span class="act-badge act-1">准备</span>
+<p><strong>实验目标：</strong>在 QEMU 中复现 ARM64 内核启动失败（"Starting kernel ... 之后无输出"），用 GDB 诊断故障根因，修复设备树后成功启动。</p>
+<p>本 Lab 对应案例《同一个内核，两块板子》中的真实排障流程。你将扮演那位拿着旧板 SD 卡插到新板上的工程师。</p>
+<p class="insight">💡 <strong>你需要的工具：</strong><code>qemu-system-aarch64</code>、<code>dtc</code>（设备树编译器）、<code>gdb-multiarch</code>、<code>wget</code>。所有操作在 Ubuntu/WSL2 中完成。</p>
+<details><summary>📚 环境安装命令</summary><div class="details-content"><code>sudo apt install -y qemu-system-aarch64 gcc-aarch64-linux-gnu device-tree-compiler gdb-multiarch wget</code></div></details>`},
+
+            {
+                title: "📥 下载 ARM64 内核", terminal: {
+                    prompt: "$ ", command: "mkdir -p ~/arm64-lab && cd ~/arm64-lab && wget -q http://ftp.debian.org/debian/dists/bookworm/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux -O linux", output: `--2027-03-10 09:15:23--  http://ftp.debian.org/.../linux
+Saving to: 'linux'
+linux                    100%[================================>]  32.4M  8.21MB/s    in 3.9s
+'linux' saved [33980416/33980416]`},
+                commentary: `<span class="act-badge act-1">第一幕：建立基线</span>
+<p>下载 Debian 预编译的 ARM64 内核镜像。这个内核可以在任何 ARM64 平台上运行——前提是有正确的<span class="chat-link">设备树</span>。</p>
+<p class="thinking">同一个内核二进制文件适配上万种不同的板子，靠的就是设备树把硬件差异抽象出来。</p>`},
+
+            {
+                title: "📥 下载 initrd", terminal: { prompt: "$ ", command: "wget -q http://ftp.debian.org/debian/dists/bookworm/main/installer-arm64/current/images/netboot/debian-installer/arm64/initrd.gz -O initrd.gz", output: `'initrd.gz' saved [37789456/37789456]` },
+                commentary: `<p>同时下载 initrd（初始化内存盘）。它包含了让内核进入用户空间所需的最小文件系统。</p>
+<p class="thinking">有了内核 + initrd + 正确的设备树，就能在 <span class="chat-link">QEMU</span> 中启动一个完整的 Linux 系统。</p>`},
+
+            {
+                title: "🌳 导出 QEMU 设备树", terminal: { prompt: "$ ", command: "qemu-system-aarch64 -M virt,dumpdtb=good.dtb -cpu cortex-a72 -m 256M -nographic", output: `machine 'virt' has been dumped to: good.dtb` },
+                commentary: `<span class="act-badge act-1">第一幕：建立基线</span>
+<p><strong>关键操作：</strong><span class="chat-link">QEMU</span> 的 <code>virt</code> 平台会自动生成一份正确的<span class="chat-link">设备树</span>。用 <code>dumpdtb</code> 参数导出它。</p>
+<p class="insight">💡 这份 <code>good.dtb</code> 就是"正确的硬件说明书"——所有设备地址在 QEMU 虚拟机中都是真实存在的。</p>`},
+
+            {
+                title: "🔍 查看设备树中的串口", terminal: {
+                    prompt: "$ ", command: "dtc -I dtb -O dts -o good.dts good.dtb && grep -A5 'pl011' good.dts", output: `pl011@9000000 {
+    compatible = "arm,pl011", "arm,primecell";
+    reg = <0x00 0x9000000 0x00 0x1000>;
+    interrupts = <0x00 0x01 0x04>;
+    clocks = <0x8000 0x8001>;
+    clock-names = "uartclk", "apb_pclk";`},
+                commentary: `<p>用 <code><span class="chat-link">dtc</span></code> 反编译成可读文本。找到串口节点：</p>
+<p class="insight">💡 <strong>关键信息：</strong><br>• <span class="chat-link">compatible</span> = <code>"arm,pl011"</code> — 告诉内核用 <span class="chat-link">PL011</span> 驱动<br>• <code>reg</code> = <code>0x9000000</code> — 串口的 <span class="chat-link">MMIO</span> 基地址<br>• 记住这个地址！待会我们要故意改掉它。</p>`},
+
+            {
+                title: "✅ 正常启动内核（基线）", terminal: {
+                    prompt: "$ ", command: "qemu-system-aarch64 -M virt -cpu cortex-a72 -m 256M -smp 2 -nographic -kernel linux -initrd initrd.gz -append \"console=ttyAMA0 earlycon\"", output: `[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[    0.000000] Linux version 6.1.80 (debian-kernel@lists.debian.org)
+[    0.000000] Machine model: linux,dummy-virt
+[    0.000000] earlycon: pl011 at MMIO 0x0000000009000000
+...
+[    0.532000] Serial: AMBA PL011 UART driver
+[    0.536000] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 14) is a PL011 rev3
+[    0.540000] printk: console [ttyAMA0] enabled
+...
+[    2.103000] Run /init as init process`},
+                commentary: `<p><strong>🎯 这就是"健康"的样子。</strong>记住几个关键行：</p>
+<p>• <code>Serial: AMBA PL011 UART driver</code> — 内核找到了 PL011 驱动</p>
+<p>• <code>9000000.pl011: ttyAMA0 at MMIO 0x9000000</code> — 在正确地址初始化了串口</p>
+<p>• <code>Run /init</code> — 内核成功进入用户空间</p>
+<p class="conclusion">✅ 基线建立完成。按 <kbd>Ctrl+A</kbd> 然后 <kbd>X</kbd> 退出 QEMU。接下来——我们来搞破坏！</p>`},
+
+            {
+                title: "💀 篡改设备树——改错串口地址", terminal: { prompt: "$ ", command: "cp good.dts broken.dts && sed -i 's/0x9000000/0x1c28000/g' broken.dts && dtc -I dts -O dtb -o broken.dtb broken.dts", output: `(编译完成，无错误)` },
+                commentary: `<span class="act-badge act-2">第二幕：制造故障</span>
+<p><strong>关键操作：</strong>把串口地址从 <code>0x9000000</code>（正确）改成 <code>0x1c28000</code>（不存在的地址）。</p>
+<p class="thinking">这模拟了案例中"把旧板的 SD 卡插到新板上"——旧板的设备树写着串口在 <code>0x1c28000</code>，但新板的串口其实在 <code>0x9000000</code>。</p>
+<p class="warning">⚠️ 在 QEMU 的 virt 平台上，<code>0x1c28000</code> 这个地址没有任何设备。内核去访问时会发生什么？</p>`},
+
+            {
+                title: "💥 用错误 DTB 启动——复现'串口沉默'", terminal: {
+                    prompt: "$ ", command: "qemu-system-aarch64 -M virt -cpu cortex-a72 -m 256M -nographic -kernel linux -dtb broken.dtb -append \"console=ttyAMA0 earlycon=pl011,0x9000000\"", output: `[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[    0.000000] Linux version 6.1.80
+[    0.000000] earlycon: pl011 at MMIO 0x0000000009000000
+...
+[    0.520000] Serial: AMBA PL011 UART driver
+
+(输出突然停止，光标不再跳动...)`},
+                commentary: `<p><strong>🔥 故障复现成功！</strong></p>
+<p>注意：前几行日志仍然输出了——因为 <code><span class="chat-link">earlycon</span>=pl011,0x9000000</code> 硬编码了正确的串口地址，绕过了设备树。</p>
+<p>但当 <code>Serial: AMBA PL011 UART driver</code> 之后，内核切换到设备树驱动的正式串口——它去了 <code>0x1c28000</code>，那里什么都没有！</p>
+<p class="warning">⚠️ <strong>这就是案例中新板上看到的症状！</strong>内核活着，但嘴巴哑了——或者更糟，它可能已经 <span class="chat-link">panic</span> 了。要确认，我们需要 GDB。</p>
+<p class="thinking">按 Ctrl+A 然后 X 退出。下一步：用 GDB "读取 CPU 的内心想法"。</p>`},
+
+            {
+                title: "🔌 启动 QEMU + GDB Server", terminal: {
+                    prompt: "$ ", command: "qemu-system-aarch64 -M virt -cpu cortex-a72 -m 256M -nographic -kernel linux -dtb broken.dtb -append \"console=ttyAMA0 earlycon=pl011,0x9000000\" -s -S", output: `(QEMU 启动，CPU 被 -S 暂停，等待 GDB 连接...)
+(在另一个终端中执行下一步)`},
+                commentary: `<span class="act-badge act-3">第三幕：GDB 诊断</span>
+<p><strong>关键操作：</strong>加上 <code>-s -S</code> 参数重启 QEMU。</p>
+<p class="insight">💡 <code>-S</code> = CPU 启动后暂停（等 GDB）<br><code>-s</code> = 在端口 1234 启动 <span class="chat-link">GDB</span> server</p>
+<p>在真实硬件上，这一步的等价操作是连接 JTAG 调试器（如 Segger J-Link）。QEMU 内置的 GDB server 让你无需任何额外硬件就能做同样的事。</p>`},
+
+            {
+                title: "🐛 GDB 连接 + 运行内核", terminal: {
+                    prompt: "(gdb) ", command: "target remote :1234\n(gdb) continue\n(等待 5 秒后按 Ctrl+C)\n^C", output: `Remote debugging using :1234
+0x0000000040000000 in ?? ()
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0xffff800008084a20 in ?? ()`},
+                commentary: `<p>在另一个终端用 <code>gdb-multiarch linux</code> 启动 GDB，然后连接：</p>
+<p><code>target remote :1234</code> → 连上 QEMU 的 GDB server</p>
+<p><code>continue</code> → 让 CPU 开始跑</p>
+<p>等内核跑几秒（让它有时间走到故障点），然后 <kbd>Ctrl+C</kbd> 暂停。</p>
+<p class="insight">💡 注意 PC 从 <code>0x40000000</code>（物理地址）变成了 <code>0xffff800008084a20</code>（虚拟地址）——说明内核已开启 <span class="chat-link">MMU</span>，走过了最危险的早期启动阶段。</p>`},
+
+            {
+                title: "🛡️ 检查异常级别", terminal: { prompt: "(gdb) ", command: "p/x $CurrentEL", output: `$1 = 0x4` },
+                commentary: `<p>查看 <span class="chat-link">异常级别</span>：<code>CurrentEL = 0x4</code> → <strong>EL1（内核态）</strong>。</p>
+<p class="conclusion">🎯 <strong>诊断结论（阶段一）：</strong><br>• CPU 运行在 EL1 ✅<br>• PC 在虚拟地址空间 ✅<br>• MMU 已开启 ✅<br><br><strong>内核启动了，而且跑得很远——只是串口出了问题。</strong></p>
+<details><summary>📚 为什么 0x4 = EL1？</summary><div class="details-content">ARM64 的 CurrentEL 寄存器把异常级别存在 Bit[3:2]。EL1 = 二进制 01，左移 2 位 = 0b0100 = 0x4。同理 EL2 = 0x8，EL3 = 0xC。</div></details>`},
+
+            {
+                title: "📜 读取内核 dmesg 日志", terminal: {
+                    prompt: "(gdb) ", command: "x/200s $x1", output: `(在实际操作中，用 lx-dmesg 导出内核日志缓冲区)
+
+关键发现：
+"Serial: AMBA PL011 UART driver"
+"1c28000.pl011: ttyAMA0 at MMIO 0x1c28000"
+"Unhandled fault at 0x1c28000: synchronous external abort"
+"Kernel panic - not syncing: Fatal exception"`},
+                commentary: `<p><strong>🔥 找到了！</strong>内核日志缓冲区中的最后几行揭示了真相：</p>
+<p>① 内核试图在 <code>0x1c28000</code> 初始化串口</p>
+<p>② 那个地址没有设备 → 触发 <strong><span class="chat-link">External Abort</span></strong></p>
+<p>③ 内核直接 <span class="chat-link">Panic</span></p>
+<p class="warning">⚠️ 在 ARM 总线上，访问不存在的地址会触发 <span class="chat-link">DECERR</span>，这与 x86 PCI 总线默默返回 0xFFFFFFFF 截然不同。ARM 更严格——直接报错致死。</p>
+<p class="conclusion">🎯 <strong>根因确认：</strong>设备树中串口地址 (0x1c28000) 与实际硬件 (0x9000000) 不匹配，导致内核 panic。</p>`},
+
+            {
+                title: "🔧 对比正确 vs 错误的设备树", terminal: {
+                    prompt: "$ ", command: "diff <(grep -n 'pl011\\|9000000\\|1c28000' good.dts) <(grep -n 'pl011\\|9000000\\|1c28000' broken.dts)", output: `< pl011@9000000 {
+< reg = <0x00 0x9000000 0x00 0x1000>;
+---
+> pl011@1c28000 {
+> reg = <0x00 0x1c28000 0x00 0x1000>;`},
+                commentary: `<span class="act-badge act-4">第四幕：修复</span>
+<p>对比一目了然——就是串口基地址被改错了。</p>
+<p class="thinking">在真实场景中，这个差异更隐蔽：旧板用 <code>snps,dw-apb-uart</code>（16550 兼容）在 <code>0x1c28000</code>，新板用 <code>arm,pl011</code> 在 <code>0x9000000</code>。不仅地址不同，连 <span class="chat-link">compatible</span> 和驱动都完全不一样。</p>`},
+
+            {
+                title: "✏️ 修复设备树", terminal: { prompt: "$ ", command: "cp broken.dts fixed.dts && sed -i 's/0x1c28000/0x9000000/g' fixed.dts && dtc -I dts -O dtb -o fixed.dtb fixed.dts", output: `(编译完成)` },
+                commentary: `<p><strong>修复操作：</strong>把串口地址改回 <code>0x9000000</code>，重新编译 DTB。</p>
+<p class="insight">💡 在真实的板级迁移中，不止修改地址——还要改 compatible 属性、中断号、时钟配置等。这里为了聚焦，只修复地址。</p>`},
+
+            {
+                title: "🚀 验证修复——内核成功启动！", terminal: {
+                    prompt: "$ ", command: "qemu-system-aarch64 -M virt -cpu cortex-a72 -m 256M -smp 2 -nographic -kernel linux -initrd initrd.gz -dtb fixed.dtb -append \"console=ttyAMA0 earlycon\"", output: `[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[    0.000000] Linux version 6.1.80
+...
+[    0.532000] Serial: AMBA PL011 UART driver
+[    0.536000] 9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 14) is a PL011 rev3
+[    0.540000] printk: console [ttyAMA0] enabled
+...
+[    2.103000] Run /init as init process`},
+                commentary: `<p><strong>🎉 修复成功！</strong>内核完整启动了。</p>
+<p>对比修复前后的关键行：</p>
+<p>修复前：<code style="color:var(--accent-red)">1c28000.pl011 → External Abort → Panic</code></p>
+<p>修复后：<code style="color:var(--accent-green)">9000000.pl011 → ttyAMA0 → console enabled → Run /init</code></p>
+<p class="conclusion">🏆 <strong>Lab 完成！</strong>你走完了与案例中工程师相同的排障闭环：<br>观察症状 → GDB 诊断 → 定位根因 → 修复验证<br><br>同一个内核镜像，只换了一个 DTB 文件，系统就从"死寂"变成"满血"。这就是 ARM 生态中<span class="chat-link">设备树</span>的不可替代作用。</p>`}
+        ];
+
+        // ===== Player Engine =====
+        class TerminalPlayer {
+            constructor(steps) {
+                this.steps = steps; this.currentStep = -1; this.isPlaying = false; this.speed = 1; this.speeds = [.5, 1, 2, 4]; this.speedIdx = 1; this.typeTimer = null; this.pendingTimers = [];
+                this.termEl = document.getElementById('terminal'); this.commEl = document.getElementById('commentary'); this.playBtn = document.getElementById('playBtn'); this.progressFill = document.getElementById('progressFill'); this.progressLabel = document.getElementById('progressLabel'); this.speedBtn = document.getElementById('speedBtn'); this.headerStep = document.getElementById('headerStep');
+                this.buildCommentary(); this.updateProgress(); setTimeout(setupChatLinks, 100)
+            }
+            buildCommentary() { this.commEl.innerHTML = this.steps.map((s, i) => `<div class="comment-block" id="comment-${i}"><div class="comment-step-badge">步骤 ${i + 1} / ${this.steps.length}</div><div class="comment-title">${s.title}</div><div class="comment-body">${s.commentary}</div></div>`).join('') }
+            updateProgress() { const t = this.steps.length, c = this.currentStep + 1, p = t > 0 ? (c / t) * 100 : 0; this.progressFill.style.width = p + '%'; this.progressLabel.textContent = `${c} / ${t}` }
+            updatePlayBtn() { this.playBtn.textContent = this.isPlaying ? '⏸' : '▶'; this.playBtn.style.boxShadow = this.isPlaying ? '0 0 15px rgba(63,185,80,.6)' : 'none' }
+            highlightComment(idx) { this.steps.forEach((_, i) => { const el = document.getElementById(`comment-${i}`); el.classList.remove('active', 'past'); if (i === idx) el.classList.add('active'); else if (i < idx) el.classList.add('past') }); if (idx >= 0) { document.getElementById(`comment-${idx}`).scrollIntoView({ behavior: 'smooth', block: 'center' }) } }
+            clearTimers() { clearTimeout(this.typeTimer); this.pendingTimers.forEach(t => clearTimeout(t)); this.pendingTimers = [] }
+            delay(ms) { return new Promise(r => { const t = setTimeout(r, ms / this.speed); this.pendingTimers.push(t) }) }
+            async typeText(text, container, charDelay, className) { return new Promise(resolve => { let i = 0; const span = document.createElement('span'); span.className = className; container.appendChild(span); const cursor = document.createElement('span'); cursor.className = 'cursor'; container.appendChild(cursor); const type = () => { if (i < text.length) { span.textContent += text[i]; i++; this.termEl.scrollTop = this.termEl.scrollHeight; this.typeTimer = setTimeout(type, charDelay / this.speed) } else { cursor.remove(); resolve() } }; type() }) }
+            colorClass(line) { if (line.includes('Error') || line.includes('panic') || line.includes('fault') || line.includes('Unhandled')) return 'term-error'; if (line.startsWith('+')) return 'term-diff-add'; if (line.startsWith('-')) return 'term-diff-del'; if (line.includes('Info :') || line.includes('OK') || line.includes('connected')) return 'term-info'; if (line.includes('Starting kernel') || line.includes('Welcome to') || line.includes('login:') || line.includes('Serial:') || line.includes('ttyAMA0') || line.includes('ttyS0') || line.includes('Run /init')) return 'term-highlight'; return 'term-output' }
+            appendOutput(text) { if (!text) return; text.split('\n').forEach(line => { const div = document.createElement('div'); div.className = 'term-line'; const span = document.createElement('span'); span.className = this.colorClass(line); span.textContent = line; div.appendChild(span); this.termEl.appendChild(div) }); this.termEl.scrollTop = this.termEl.scrollHeight }
+            renderTerminal(step, animated) {
+                this.termEl.innerHTML = ''; if (!step.terminal) { this.termEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-family:Inter,sans-serif;font-size:14px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">💬</div>阅读右侧 Lab 引导</div></div>'; return Promise.resolve() }
+                this.termEl.classList.add('term-fade-in'); setTimeout(() => this.termEl.classList.remove('term-fade-in'), 400); const t = step.terminal;
+                if (!animated) { if (t.command) { const ld = document.createElement('div'); ld.className = 'term-line'; if (t.prompt) { const ps = document.createElement('span'); ps.className = 'term-prompt'; ps.textContent = t.prompt; ld.appendChild(ps) } const cs = document.createElement('span'); cs.className = 'term-command'; cs.textContent = t.command; ld.appendChild(cs); this.termEl.appendChild(ld) } this.appendOutput(t.output); return Promise.resolve() }
+                return (async () => { if (t.command) { const ld = document.createElement('div'); ld.className = 'term-line'; if (t.prompt) { const ps = document.createElement('span'); ps.className = 'term-prompt'; ps.textContent = t.prompt; ld.appendChild(ps) } this.termEl.appendChild(ld); await this.typeText(t.command, ld, 35, 'term-command'); await this.delay(400) } this.appendOutput(t.output); await this.delay(2500) })()
+            }
+            showStep(idx, animated) { if (idx < 0 || idx >= this.steps.length) return Promise.resolve(); this.currentStep = idx; this.updateProgress(); this.headerStep.textContent = this.steps[idx].title; this.highlightComment(idx); return this.renderTerminal(this.steps[idx], animated) }
+            async play() { this.isPlaying = true; this.updatePlayBtn(); while (this.isPlaying && this.currentStep < this.steps.length - 1) { await this.showStep(this.currentStep + 1, true); if (!this.isPlaying) break } this.isPlaying = false; this.updatePlayBtn() }
+            pause() { this.isPlaying = false; this.clearTimers(); this.updatePlayBtn() }
+            togglePlay() { if (this.isPlaying) this.pause(); else { if (this.currentStep >= this.steps.length - 1) this.currentStep = -1; this.play() } }
+            prevStep() { this.pause(); if (this.currentStep > 0) this.showStep(this.currentStep - 1, false) }
+            nextStep() { this.pause(); if (this.currentStep < this.steps.length - 1) this.showStep(this.currentStep + 1, false) }
+            cycleSpeed() { this.speedIdx = (this.speedIdx + 1) % this.speeds.length; this.speed = this.speeds[this.speedIdx]; this.speedBtn.textContent = this.speed + 'x' }
+            seekFromClick(e) { const r = document.getElementById('progressBar').getBoundingClientRect(); const idx = Math.round(((e.clientX - r.left) / r.width) * (this.steps.length - 1)); this.pause(); this.showStep(Math.max(0, Math.min(idx, this.steps.length - 1)), false) }
+        }
+        const player = new TerminalPlayer(STEPS);
+        function startPlayback() { const s = document.getElementById('splash'); if (s) s.classList.add('hidden'); setTimeout(() => player.play(), 400) }
+        document.addEventListener('keydown', e => { const sh = document.getElementById('splash') && document.getElementById('splash').classList.contains('hidden'); if (sh) { if (e.code === 'Space') { e.preventDefault(); player.togglePlay() } if (e.code === 'ArrowLeft') { e.preventDefault(); player.prevStep() } if (e.code === 'ArrowRight') { e.preventDefault(); player.nextStep() } } else { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); startPlayback() } } });
+    </script>
+</body>
+
+</html>

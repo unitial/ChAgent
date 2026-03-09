@@ -7,6 +7,8 @@ import Conversations from './pages/Conversations'
 import ModelSettingsPage from './pages/ModelSettings'
 import TeacherChat from './pages/TeacherChat'
 import Textbooks from './pages/Textbooks'
+import Cases from './pages/Cases'
+import { CaseList, CasePlayer } from './pages/StudentCases'
 import Layout from './components/Layout'
 import StudentChat from './pages/StudentChat'
 
@@ -21,6 +23,8 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/chat" element={<StudentChat />} />
+        <Route path="/learn/cases" element={<CaseList />} />
+        <Route path="/learn/cases/:slug" element={<CasePlayer />} />
         <Route
           path="/"
           element={
@@ -37,6 +41,7 @@ export default function App() {
           <Route path="model-settings" element={<ModelSettingsPage />} />
           <Route path="teacher-chat" element={<TeacherChat />} />
           <Route path="textbooks" element={<Textbooks />} />
+          <Route path="cases" element={<Cases />} />
         </Route>
       </Routes>
     </BrowserRouter>

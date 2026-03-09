@@ -256,3 +256,11 @@ export const uploadTextbook = (name: string, file: File) => {
   form.append('file', file)
   return api.post<Textbook>('/textbooks', form)
 }
+
+// Cases
+export interface Case {
+  slug: string
+  name: string
+}
+export const getCases = () => axios.get<Case[]>('/api/cases')
+

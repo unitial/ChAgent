@@ -22,6 +22,7 @@ import routers.settings as settings_router
 import routers.profiles as profiles_router
 import routers.teacher_chat as teacher_chat_router
 import routers.textbooks as textbooks_router
+import routers.cases as cases_router
 
 app = FastAPI(title="ChAgent", description="OS Course Teaching Bot Backend", version="0.1.0")
 
@@ -90,12 +91,18 @@ app.include_router(settings_router.router)
 app.include_router(profiles_router.router)
 app.include_router(teacher_chat_router.router)
 app.include_router(textbooks_router.router)
+app.include_router(cases_router.router)
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
+# Serve case study assets (images, etc.)
+_CASES_DIR = Path(__file__).parent / "cases"
+if _CASES_DIR.exists():
+    app.mount("/case-assets", StaticFiles(directory=_CASES_DIR), name="case-assets")
 
 # Serve frontend SPA (must be last)
 _FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

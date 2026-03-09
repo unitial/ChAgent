@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:8000',
       '/webhook': 'http://localhost:8000',
+      '/case-assets': 'http://localhost:8000',
     },
   },
 })

@@ -128,7 +128,8 @@ export default function StudentChat() {
     }
   }
 
-  async function checkActiveChallenge() {    try {
+  async function checkActiveChallenge() {
+    try {
       const res = await getActiveChallenge()
       setHasActiveChallenge(!!res.data)
     } catch {
@@ -508,6 +509,9 @@ export default function StudentChat() {
             <>
               <button style={styles.historyBtn} onClick={() => setSidebarOpen(o => !o)} title="查看历史对话">
                 📜 历史
+              </button>
+              <button style={styles.historyBtn} onClick={() => window.location.href = '/learn/cases'} title="查看案例">
+                📚 案例
               </button>
               <button style={styles.newSessionBtn} onClick={handleNewSession} disabled={loading} title="清空当前对话，开启新会话">
                 + 新对话
