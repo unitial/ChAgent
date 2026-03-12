@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>榨干系统调用最后一丝性能：openEuler xcall 零门槛提速 — 交互式终端回放</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-deep: #0d1117;
+      --bg-terminal: #161b22;
+      --bg-commentary: #1a1f2b;
+      --bg-control: #010409;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-dim: #484f58;
+      --accent-green: #3fb950;
+      --accent-blue: #58a6ff;
+      --accent-red: #f85149;
+      --accent-yellow: #d29922;
+      --border: #30363d;
+      --glass: rgba(22, 27, 34, 0.7);
+    }
+    body, html { width: 100%; height: 100%; background-color: var(--bg-deep); color: var(--text-primary); font-family: 'Inter', system-ui, -apple-system, sans-serif; overflow: hidden; }
+    .app { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+    .header { height: 48px; display: flex; align-items: center; padding: 0 20px; background: var(--bg-control); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .header-icon { font-size: 18px; margin-right: 12px; }
+    .header-title { font-size: 15px; font-weight: 600; }
+    .header-step-title { margin-left: auto; font-size: 14px; color: var(--accent-blue); font-weight: 600; }
+    .main-panels { display: flex; flex: 1; overflow: hidden; }
+    
+    /* ===== Terminal Panel ===== */
+    .terminal-panel { flex: 1.2; display: flex; flex-direction: column; border-right: 1px solid var(--border); min-width: 0; background: var(--bg-terminal); }
+    .terminal-tab-bar { display: flex; align-items: flex-end; padding: 0 16px; height: 36px; background: var(--bg-control); border-bottom: 1px solid var(--border); }
+    .terminal-tab { padding: 6px 16px; background: var(--bg-terminal); border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-primary); display: flex; align-items: center; gap: 8px; position: relative; top: 1px; }
+    .terminal-tab .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+    .terminal-content { flex: 1; padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.6; overflow-y: auto; color: var(--text-primary); }
+    .terminal-content::-webkit-scrollbar { width: 8px; }
+    .terminal-content::-webkit-scrollbar-track { background: transparent; }
+    .terminal-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .term-line { white-space: pre-wrap; word-break: break-all; }
+    .term-prompt { color: var(--accent-green); font-weight: 700; }
+    .term-command { color: #f0f6fc; }
+    .term-output { color: var(--text-secondary); }
+    .term-highlight { color: var(--accent-yellow); font-weight: 700; }
+    .term-error { color: var(--accent-red); font-weight: 700; }
+    .term-info { color: var(--accent-blue); }
+    .term-diff-add { color: var(--accent-green); }
+    .term-diff-del { color: var(--accent-red); }
+    .cursor { display: inline-block; width: 8px; height: 15px; background-color: var(--text-secondary); animation: blink 1s step-end infinite; vertical-align: text-bottom; margin-left: 1px; }
+    @keyframes blink { 50% { opacity: 0; } }
+    .term-fade-in { animation: termFadeIn 0.4s ease-out; }
+    @keyframes termFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* ===== Commentary Panel ===== */
+    .commentary-panel { flex: 0.9; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); background: var(--bg-commentary); }
+    .commentary-tab-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--bg-commentary); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
+    .commentary-content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+    .commentary-content::-webkit-scrollbar { width: 6px; }
+    .commentary-content::-webkit-scrollbar-track { background: transparent; }
+    .commentary-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    
+    .comment-block { margin-bottom: 20px; padding: 16px 20px; background: var(--glass); border-radius: 10px; border-left: 3px solid var(--border); opacity: 0.15; transition: opacity 0.5s ease, border-color 0.5s ease, transform 0.4s ease; transform: translateY(4px) scale(0.98); }
+    .comment-block.active { opacity: 1; border-left-color: var(--accent-blue); transform: translateY(0) scale(1); }
+    .comment-block.past { opacity: 0.35; border-left-color: var(--text-dim); transform: translateY(0) scale(1); }
+    .comment-step-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--accent-blue); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .comment-block.past .comment-step-badge { color: var(--text-dim); }
+    .comment-title { font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; }
+    .comment-body { font-size: 14px; line-height: 1.8; color: #c9d1d9; }
+    .comment-body p { margin-bottom: 10px; }
+    .comment-body strong { color: var(--text-primary); font-weight: 700; }
+    .comment-body code { font-family: 'JetBrains Mono', monospace; font-size: 12px; background: rgba(110, 118, 129, 0.2); padding: 2px 6px; border-radius: 4px; color: var(--accent-yellow); }
+    .comment-body .thinking { color: var(--text-secondary); font-style: italic; }
+    .comment-body .insight { display: block; margin: 10px 0; padding: 10px 14px; background: rgba(56, 139, 253, 0.08); border-left: 3px solid var(--accent-blue); border-radius: 0 6px 6px 0; color: var(--text-primary); font-size: 13px; font-style: normal; }
+    .comment-body .warning { display: block; margin: 10px 0; padding: 10px 14px; background: rgba(248, 81, 73, 0.08); border-left: 3px solid var(--accent-red); border-radius: 0 6px 6px 0; color: var(--text-primary); font-size: 13px; font-style: normal; }
+    .comment-body .conclusion { display: block; margin: 10px 0; padding: 10px 14px; background: rgba(63, 185, 80, 0.08); border-left: 3px solid var(--accent-green); border-radius: 0 6px 6px 0; color: var(--text-primary); font-size: 13px; font-style: normal; }
+
+    /* ===== Chat Panel ===== */
+    .chat-panel { flex: 0.85; display: flex; flex-direction: column; min-width: 280px; background: var(--bg-commentary); }
+    .chat-header { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--bg-commentary); border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text-primary); }
+    .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; background: var(--glass); }
+    .chat-messages::-webkit-scrollbar { width: 6px; }
+    .chat-messages::-webkit-scrollbar-track { background: transparent; }
+    .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .chat-msg { display: flex; flex-direction: column; max-width: 90%; font-size: 13px; line-height: 1.5; }
+    .chat-msg.user { align-self: flex-end; }
+    .chat-msg.ai { align-self: flex-start; }
+    .chat-bubble { padding: 10px 14px; border-radius: 12px; }
+    .chat-msg.user .chat-bubble { background: var(--accent-blue); color: #fff; border-bottom-right-radius: 2px; }
+    .chat-msg.ai .chat-bubble { background: var(--bg-terminal); color: var(--text-primary); border-bottom-left-radius: 2px; border: 1px solid var(--border); }
+    .chat-input-area { padding: 12px; background: var(--bg-commentary); border-top: 1px solid var(--border); display: flex; gap: 8px; }
+    .chat-input { flex: 1; background: var(--bg-terminal); border: 1px solid var(--border); color: var(--text-primary); border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; font-family: inherit; }
+    .chat-input:focus { border-color: var(--accent-blue); }
+    .chat-send-btn { background: var(--accent-blue); color: #fff; border: none; border-radius: 8px; width: 36px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: opacity 0.2s; }
+    .chat-send-btn:hover { opacity: 0.8; }
+    .chat-link { color: var(--accent-yellow); cursor: pointer; text-decoration: underline dashed; text-underline-offset: 4px; font-weight: 500; transition: opacity 0.2s; }
+    .chat-link:hover { opacity: 0.8; }
+
+    /* typing indicator */
+    .typing-dots { display: flex; gap: 4px; padding: 4px 2px; }
+    .typing-dots span { width: 6px; height: 6px; background: var(--text-muted); border-radius: 50%; animation: typing 1.4s infinite ease-in-out both; }
+    .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes typing { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+
+    
+    /* Chat Bubble Markdown 样式 */
+    .chat-bubble code { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; background: rgba(110,118,129,0.25); padding: 1px 5px; border-radius: 3px; color: var(--accent-yellow); }
+    .chat-bubble pre { margin: 8px 0; padding: 10px; background: var(--bg-terminal); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; }
+    .chat-bubble pre code { background: none; padding: 0; color: var(--text-primary); font-size: 12px; line-height: 1.5; }
+    .chat-bubble strong { color: var(--text-primary); font-weight: 600; }
+    .chat-bubble em { color: var(--text-secondary); }
+    .chat-bubble ul, .chat-bubble ol { margin: 6px 0; padding-left: 20px; }
+    .chat-bubble li { margin: 3px 0; line-height: 1.5; }
+    .chat-bubble h3, .chat-bubble h4 { font-size: 13px; margin: 8px 0 4px; color: var(--accent-blue); }
+    .chat-bubble hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+    .chat-bubble p { margin: 4px 0; }
+    .cmd-summary { margin: 16px 0; }
+    .cmd-summary h4 { font-size: 14px; margin-bottom: 8px; color: var(--accent-blue); }
+    .cmd-summary table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .cmd-summary th { text-align: left; padding: 6px 10px; background: rgba(88,166,255,0.1); border-bottom: 1px solid var(--border); color: var(--accent-blue); font-weight: 600; }
+    .cmd-summary td { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); color: var(--text-secondary); }
+    .cmd-summary td code { color: var(--accent-yellow); background: rgba(110,118,129,0.2); padding: 1px 5px; border-radius: 3px; }
+    .cmd-summary tr:hover td { background: rgba(255,255,255,0.03); }
+
+    /* ===== Control Bar ===== */
+    .control-bar { display: flex; align-items: center; gap: 12px; padding: 10px 20px; background: var(--bg-control); border-top: 1px solid var(--border); flex-shrink: 0; }
+    .ctrl-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; background: var(--glass); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); font-size: 16px; cursor: pointer; transition: background 0.2s, transform 0.1s; user-select: none; }
+    .ctrl-btn:hover { background: rgba(255, 255, 255, 0.1); }
+    .ctrl-btn:active { transform: scale(0.92); }
+    .ctrl-btn.play-btn { width: 44px; height: 44px; background: var(--accent-green); border-color: var(--accent-green); color: #000; font-size: 18px; border-radius: 50%; }
+    .ctrl-btn.play-btn:hover { background: #46d160; }
+    .progress-container { flex: 1; display: flex; align-items: center; gap: 10px; }
+    .progress-bar { flex: 1; height: 6px; background: var(--border); border-radius: 3px; cursor: pointer; position: relative; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent-green), var(--accent-blue)); border-radius: 3px; transition: width 0.3s; position: relative; }
+    .progress-fill::after { content: ''; position: absolute; right: -6px; top: -5px; width: 16px; height: 16px; background: var(--accent-blue); border-radius: 50%; border: 2px solid var(--bg-control); box-shadow: 0 0 8px rgba(88, 166, 255, 0.4); }
+    .progress-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; min-width: 80px; font-family: 'JetBrains Mono', monospace; }
+    .speed-btn { padding: 4px 10px; background: var(--glass); border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 12px; font-weight: 600; cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.2s; }
+    .speed-btn:hover { color: var(--text-primary); border-color: var(--accent-blue); }
+    .shortcuts-hint { font-size: 11px; color: var(--text-dim); display: flex; gap: 8px; }
+    .shortcuts-hint kbd { display: inline-block; padding: 1px 5px; background: var(--glass); border: 1px solid var(--border); border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+
+    /* ===== Splash ===== */
+    .splash-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(13, 17, 23, 0.92); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 100; transition: opacity 0.5s; }
+    .splash-overlay.hidden { opacity: 0; pointer-events: none; }
+    .hardware-photo { width: 100%; border-radius: 8px; margin-bottom: 16px; border: 1px solid var(--border); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5); }
+    .splash-card { text-align: center; max-width: 530px; padding: 30px; }
+    .splash-card h1 { font-size: 26px; margin-bottom: 12px; background: linear-gradient(135deg, var(--accent-green), var(--accent-blue)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .splash-card p { color: var(--text-secondary); line-height: 1.6; margin-bottom: 24px; font-size: 15px; }
+    .splash-start-btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 32px; background: var(--accent-green); color: #000; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: transform 0.15s, box-shadow 0.2s; }
+    .splash-start-btn:hover { transform: scale(1.04); box-shadow: 0 0 30px rgba(63, 185, 80, 0.3); }
+  </style>
+</head>
+<body>
+
+  <!-- Splash Screen -->
+  <div class="splash-overlay" id="splash">
+    <div class="splash-card">
+      
+      <h1>榨干系统调用最后一丝性能：openEuler xcall 零门槛提速</h1>
+      <p>网络高频压测全真模拟推演。<br>跟随系统内核工程师的视角，看看 openEuler 如何突破性能“玻璃天花板”。</p>
+      <button class="splash-start-btn" onclick="startPlayback()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        开始观看
+      </button>
+    </div>
+  </div>
+
+  <div class="app">
+    <header class="header">
+      <span class="header-icon">🔍</span>
+      <span class="header-title">榨干系统调用最后一丝性能：openEuler xcall 零门槛提速</span>
+      <span class="header-step-title" id="headerStep"></span>
+    </header>
+
+    <div class="main-panels">
+      <div class="terminal-panel">
+        <div class="terminal-tab-bar">
+          <div class="terminal-tab"><span class="dot"></span>Terminal</div>
+        </div>
+        <div class="terminal-content" id="terminal"></div>
+      </div>
+
+      <div class="commentary-panel">
+        <div class="commentary-tab-bar">💬 思考过程</div>
+        <div class="commentary-content" id="commentary"></div>
+      </div>
+
+      <div class="chat-panel">
+        <div class="chat-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+          <span>AI 助教答疑</span>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg ai">
+            <div class="chat-bubble">
+              你好！我是这节课的 AI 助教。在阅读左侧时，点击带有虚线的<span class="chat-link" style="text-decoration:none">高亮关键词</span>，或者直接在下方输入框向我提问，我会为你深入解答底层原理。
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <input type="text" class="chat-input" id="chatInput" placeholder="输入你想了解的内容..." autocomplete="off" onkeypress="handleChatKeyPress(event)">
+          <button class="chat-send-btn" onclick="sendChatMessage()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </div>
+    </div> <!-- /main-panels -->
+
+    <div class="control-bar">
+      <button class="ctrl-btn" onclick="player.prevStep()" title="上一步 (←)">⏮</button>
+      <button class="ctrl-btn play-btn" id="playBtn" onclick="player.togglePlay()" title="播放/暂停 (Space)">▶</button>
+      <button class="ctrl-btn" onclick="player.nextStep()" title="下一步 (→)">⏭</button>
+      <div class="progress-container">
+        <div class="progress-bar" id="progressBar" onclick="player.seekFromClick(event)">
+          <div class="progress-fill" id="progressFill" style="width:0%"></div>
+        </div>
+        <span class="progress-label" id="progressLabel">0 / 0</span>
+      </div>
+      <button class="speed-btn" id="speedBtn" onclick="player.cycleSpeed()">1x</button>
+      <div class="shortcuts-hint">
+        <span><kbd>Space</kbd> 播放</span>
+        <span><kbd>←</kbd><kbd>→</kbd> 切换</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function handleChatKeyPress(e) {
+      if (e.key === 'Enter') sendChatMessage();
+    }
+
+    function sendChatMessage(textOverride) {
+      const input = document.getElementById('chatInput');
+      const text = textOverride || input.value.trim();
+      if (!text) return;
+      
+      appendMessage('user', text);
+      if (!textOverride) input.value = '';
+      showTypingIndicator();
+      setTimeout(() => { simulateAIResponse(text); }, 600 + Math.random() * 800);
+    }
+
+    function appendMessage(role, text) {
+      const container = document.getElementById('chatMessages');
+      const typing = document.getElementById('typingIndicator');
+      if (typing) typing.remove();
+      
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `chat-msg ${role}`;
+      // Note: text is already rendered HTML by simulateAIResponse, or raw text by user
+      const isHtml = typeof text === 'string' && (text.includes('<p>') || text.includes('<strong>') || text.includes('<code>'));
+      const renderStr = role === 'ai' && !isHtml ? text.replace(/\n/g, '<br>') : text;
+      msgDiv.innerHTML = `<div class="chat-bubble">${renderStr}</div>`;
+      container.appendChild(msgDiv);
+      container.scrollTop = container.scrollHeight;
+      return msgDiv;
+    }
+    
+    function showTypingIndicator() {
+      const container = document.getElementById('chatMessages');
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `chat-msg ai`;
+      msgDiv.id = 'typingIndicator';
+      msgDiv.innerHTML = `<div class="chat-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
+      container.appendChild(msgDiv);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function simulateAIResponse(query) {
+      let reply = "这是一个模拟的 AI 回复。";
+      
+      if (query.includes("SVC") || query.includes("el0_sync")) {
+        reply = "**SVC (Supervisor Call) 指令**\n\n在 ARM64 架构下，用户态应用要请求内核服务（如读文件、网络IO），必须要执行 `SVC #0`。这会触发硬件状态切换，并跳转到内核定好的异常处理向量入口（通常就是 `el0_sync`，意为来自 EL0 用户态的同步异常）。\n\n在这里内核开始保存巨大的上下文结构。";
+      } else if (query.includes("pt_regs")) {
+        reply = "**pt_regs 结构体**\n\n在操作系统内核中，每次发生异常或中断，要跨越特权级时，第一件事是必须把你目前的所有寄存器锁进栈里保管好，这堆寄存器的集合就叫 `pt_regs`。在 AArch64 中，保存/恢复 30 多个 64 位寄存器会消耗不少的 CPU 周期。";
+      } else if (query.includes("openEuler") || query.includes("xcall")) {
+        reply = "**xcall (极速系统调用)**\n\n这是华为为 openEuler 设计的内核态黑科技。核心思想是识别那些‘又短又高频’的内核调用过程（如内存和快速网络IO），然后绕开巨大的传统内核分发路径（不保存完整的 `pt_regs`），用极少的指令周期完成跨界执行然后迅速返回，极大提升了网络和缓存集群性能。";
+      }
+      
+      const mdHtml = miniMarkdown(reply);
+      appendMessage('ai', mdHtml);
+    }
+    
+    function miniMarkdown(text) {
+        return text
+            .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code class="lang-$1">$2</code></pre>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+            .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+            .replace(/^---$/gm, '<hr>')
+            .replace(/^\d+\.\s+(.+)$/gm, '<li class="md-ol">$1</li>')
+            .replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>')
+            .replace(/(<li[^>]*>.*<\/li>\n?)+/g, m =>
+                m.includes('md-ol') ? `<ol>${m}</ol>` : `<ul>${m}</ul>`)
+            .replace(/\n{2,}/g, '</p><p>')
+            .replace(/\n/g, '<br>')
+            .replace(/^(.+)$/s, '<p>$1</p>')
+            .replace(/<p><(h[34]|ul|ol|pre|hr)/g, '<$1')
+            .replace(/<\/(h[34]|ul|ol|pre)><\/p>/g, '</$1>');
+    }
+
+
+    function setupChatLinks() {
+      document.querySelectorAll('.chat-link:not([data-bound])').forEach(link => {
+        link.dataset.bound = 'true';
+        link.addEventListener('click', (e) => {
+          const keyword = e.target.innerText;
+          sendChatMessage(`请详细解释一下：${keyword}`);
+        });
+      });
+    }
+
+    const STEPS = [
+      {
+        title: "📎 故事背景 (遇到性能天花板)",
+        terminal: {
+          prompt: "$ ", command: "redis-benchmark -q -n 2000000 -c 500 -P 16",
+          output: `PING_INLINE: 812345.67 requests per second, p50=0.512 msec
+GET: 809112.33 requests per second, p50=0.521 msec
+
+$ vmstat 1 3
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+12  0      0  2109M  120M  4100M    0    0     0     0 80k 120k 35 60  5  0  0
+14  0      0  2109M  120M  4100M    0    0     0     0 82k 125k 33 62  5  0  0`
+        },
+        commentary: `<p><strong>场景：</strong>我们的 Redis 分布式集群在最新采购的 128 核 ARM64 服务器上进行疯狂压测。</p>
+<p class="dialogue"><span class="speaker">小宇：</span>"老王，我彻底抓狂了！按理说这种神级配置跑 Redis 这种纯内存数据库应该是碾压局，可单实例 QPS 就是死死卡在 80 万上不去！"</p>
+<p class="dialogue"><span class="speaker">小宇：</span>"你看 <code>vmstat</code>：<code>us</code> (User 用户态) 只有 35%，而 <code>sy</code>（System 内核态）竟然高达 60%！Redis 的核心逻辑全在用户态里，现在 sy 反倒比 us 高出一大截，到底是谁偷走了 CPU 算力？"</p>`
+      },
+      {
+        title: "🔍 perf top：追查 CPU 窃贼",
+        terminal: {
+          prompt: "$ ", command: "sudo perf top -p $(pidof redis-server)",
+          output: `Samples: 50K of event 'cycles', 4000 Hz, Event count (approx.): 12000000000
+Overhead  Shared Object       Symbol
+  15.20%  [kernel]            [k] el0_sync
+  12.30%  [kernel]            [k] do_el0_svc
+   8.40%  [kernel]            [k] do_epoll_wait
+   7.20%  [kernel]            [k] copy_from_user
+   6.50%  [kernel]            [k] sys_read`
+        },
+        commentary: `<p>老王微微一笑，敲下了一行 <code>perf top</code> 命令。</p>
+<p class="insight">🎯 <b>原来如此：系统调用的“过关费”太贵了！</b><br>
+排名前两位的 <span class="chat-link">el0_sync</span> 和 <code>do_el0_svc</code> 加起来占了近 28% 的 CPU！这两个函数本身不做任何实际工作，它们只是系统调用的“入口框架”，像高速公路的收费站，它们不会帮你开车，但每次过路都强制让你停一下。<br>
+后面的 <code>do_epoll_wait</code>、<code>copy_from_user</code>、<code>sys_read</code> 是真正干活的内核 I/O 操作，它们是正当的内核态工作。</p>`
+      },
+      {
+        title: "🧳 冗长的常规系统调用路线",
+        terminal: null,
+        commentary: `<p class="dialogue"><span class="speaker">老王：</span>"在标准的 ARM64 Linux 中，每次发生系统调用，CPU 会触发异常跳转到内核的 <code>el0_sync</code>。在这个过程中，内核必须做一整套‘全身体检’。"</p>
+<p>标准路线下内核不仅要保存 <span class="chat-link">pt_regs</span> (30个寄存器)，要检查待定信号，还要查表分发。<br>对于像读大文件这种极其耗时的操作，这点开销不值一提。但对于 Nginx 或 Redis 处理海量微小请求的程序来说，这点**底噪**甚至超过了进程实际干的活！</p>`
+      },
+      {
+        title: "⚡ 杀手锏：openEuler xcall 极速通道",
+        terminal: null,
+        commentary: `<p class="dialogue"><span class="speaker">老王：</span>"正因为如此，华为在主导的 <span class="chat-link">openEuler</span> 中针对 ARM64 引入了一把尖刀——<b>xcall 机制 (Fast System Call)</b>。"</p>
+<p>xcall 的核心思想是**“VIP 快速绿色通道”**。既然高频系统调用（比如读取时间、网络数据）极少阻塞，那为什么传统内核非要保存 30 多个通用寄存器呢？这就引出了一个底层设计问题：</p>
+<p class="insight">💡 <b>关键在于利用 C 语言的调用约定 (ABI)</b><br>
+传统系统调用视用户进程为黑盒，“宁错杀不放过”地拍下 <code>pt_regs</code> 快照。<br>
+而 xcall <b>主动信任并利用了用户态 C 函数的调用约定</b>。按照编译器规则，函数调用默认允许破坏“暂存寄存器”（如 X0~X7），其他寄存器由调用者负责。只要 xcall 内部的极简 C 函数自己老实听话不去动非易失寄存器，它就能像个普通的 C 函数一样执行！<br>
+因此，xcall 在陷入内核时，只需要极简保存 3~4 个受特权级切换波及的底层寄存器，连 <code>pt_regs</code> 都不用建，大幅减少压栈内存 IO。</p>
+<p>此外，xcall 还<b>彻底抛弃了慢速的信号与调度检查包袱</b>，通过热指令替换，直通对应的极简版内联 Syscall 函数，完事后光速降级返回 EL0。</p>`
+      },
+      {
+        title: "🔓 实战：一键开启 xcall",
+        terminal: {
+          prompt: "$ ", command: `cat /sys/kernel/debug/xcall/status
+$ echo 1 | sudo tee /sys/kernel/debug/xcall/enable
+$ cat /proc/xcall/stat`,
+          output: `xcall is disabled.
+Supported syscalls: gettimeofday, epoll_wait, read, write, recvfrom, sendto...
+1
+xcall_hits: 0
+xcall_misses: 0`
+        },
+        commentary: `<p class="dialogue"><span class="speaker">小宇：</span>"需要我改 Redis 代码吗？是不是要用特殊的 API 库？"</p>
+<p class="dialogue"><span class="speaker">老王：</span>"最牛的地方就是：<b>对用户态应用完全透明！零修改代码！</b>只需要在这个包含 xcall_tune 插件的内核里打个开关即可。"</p>
+<p>老王通过底层的 debugfs 和 procfs，轻描淡写地激活了整个系统的极速调用引擎。</p>`
+      },
+      {
+        title: "🚀 性能起飞：见证奇迹的时刻",
+        terminal: {
+          prompt: "$ ", command: "redis-benchmark -q -n 2000000 -c 500 -P 16",
+          output: `PING_INLINE: 981240.11 requests per second, p50=0.380 msec
+GET: 978101.45 requests per second, p50=0.395 msec
+
+$ cat /proc/xcall/stat
+xcall_hits: 15480201
+xcall_misses: 231405
+
+$ vmstat 1 3
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+12  0      0  2105M  120M  4100M    0    0     0     0 95k  85k 50 45  5  0  0
+13  0      0  2105M  120M  4100M    0    0     0     0 97k  88k 48 47  5  0  0`
+        },
+        commentary: `<p class="thinking">小宇屏住呼吸，再次按下了压测的回车键。</p>
+<p class="insight">🔥 <b>性能提升的真相！</b><br>
+QPS 从 81 万到近 98 万，提升约 20%！<code>xcall_hits</code> 飙升证明海量调用已走上快速通道。<br>
+更关键的是看 vmstat：<code>us</code> 从 35% 回升到 50%，<code>sy</code> 从 60% 降到 45%！用户态终于变成大头，CPU 终于花更多时间做正事。</p>
+<p class="dialogue"><span class="speaker">小宇：</span>"等等，内核态还有 45%？怎么没有彻底降下来？"</p>
+<p class="dialogue"><span class="speaker">老王：</span>"xcall 只优化了系统调用的<b>入口框架</b>，而内核里真正干活的代码——网络 I/O、内存拷贝、Epoll 管理——是正当的内核工作，不能也不应该被消除。"</p>`
+      },
+      {
+        title: "🛡️ perf top 重新复盘",
+        terminal: {
+          prompt: "$ ", command: "sudo perf top -p $(pidof redis-server)",
+          output: `Samples: 50K of event 'cycles', 4000 Hz, Event count (approx.): 12000000000
+Overhead  Shared Object       Symbol
+   9.10%  [kernel]            [k] do_epoll_wait
+   7.20%  [kernel]            [k] copy_from_user
+   6.50%  [kernel]            [k] sys_read
+   2.10%  [kernel]            [k] el0_sync
+   1.50%  [kernel]            [k] do_el0_svc`
+        },
+        commentary: `<p class="conclusion">✨ **小宇彻底懂了**<br>
+曾经盘踞在 CPU 消耗榜头两名的 <code>el0_sync</code> + <code>do_el0_svc</code> （共 28%）降到了 3.6%！这与 vmstat 中 sy 下降的幅度完美对应。<br>
+xcall 的设计哲学：<b>不干涉内核的实际工作，只精准砍掉“进出城门”的无用开销</b>。</p>`
+      },
+      {
+        title: "🎓 进阶探讨：为什么不全用 xcall？",
+        terminal: null,
+        commentary: `<p class="thinking">既然 xcall 性能如此爆炸，为什么 Linux 社区不把所有的系统调用都改成这种极简模式？</p>
+<p class="insight">原因在于：<b>极简现场保存是有高昂代价的。</b></p>
+<p><b>1. 丧失了进程调度 (Scheduling) 的能力</b><br>
+传统的抢占式操作系统在系统调用返回前，会检查当前进程的时间片是否用尽。如果需要调度，进程会被挂起，其寄存器状态必须被安全地保存在 <code>pt_regs</code> 中。<br>xcall 因为根本没有建立 <code>pt_regs</code>，它<b>绝对不能被挂起</b>！因此它只适用于保证绝不阻塞休眠的高频调用。</p>
+<p><b>2. 丧失了信号处理 (Signal Handling) 的时机</b><br>像 Ctrl+C 这样的信号，通常是在系统调用返回用户态时顺手处理的。xcall 为追求极致速度直接砍掉了这段逻辑。</p>
+<p><b>3. 内核追踪 (Strace) 失效</b><br>追求极限性能和追求极致可观测性往往是矛盾的。xcall 会绕过 <code>ptrace</code> 探测点。</p>
+<div class="cmd-summary">
+  <h4>📋 本案例命令小结</h4>
+  <table>
+    <tr><th>命令</th><th>作用</th></tr>
+    <tr><td><code>redis-benchmark</code></td><td>Redis 内置压测工具，用 pipeline 模式发起海量请求。</td></tr>
+    <tr><td><code>vmstat 1 3</code></td><td>每隔 1 秒打印一次全系统的 CPU 和内存宏观表现。</td></tr>
+    <tr><td><code>perf top -p PID</code></td><td>采样指定进程，热点代码大摸底，谁在拖慢速度一目了然。</td></tr>
+  </table>
+</div>`
+      }
+    ];;
+
+    class TerminalPlayer {
+      constructor(steps) {
+        this.steps = steps;
+        this.currentStep = -1;
+        this.isPlaying = false;
+        this.speed = 1;
+        this.speeds = [0.5, 1, 2, 4];
+        this.speedIdx = 1;
+        this.typeTimer = null;
+        this.pendingTimers = [];
+        this.termEl = document.getElementById('terminal');
+        this.commEl = document.getElementById('commentary');
+        this.playBtn = document.getElementById('playBtn');
+        this.progressFill = document.getElementById('progressFill');
+        this.progressLabel = document.getElementById('progressLabel');
+        this.speedBtn = document.getElementById('speedBtn');
+        this.headerStep = document.getElementById('headerStep');
+
+        this.buildCommentary();
+        this.updateProgress();
+        setTimeout(setupChatLinks, 100);
+      }
+
+      buildCommentary() {
+        this.commEl.innerHTML = this.steps.map((s, i) =>
+          `<div class="comment-block" id="comment-${i}">
+        <div class="comment-step-badge">步骤 ${i + 1} / ${this.steps.length}</div>
+        <div class="comment-title">${s.title}</div>
+        <div class="comment-body">${s.commentary}</div>
+      </div>`
+        ).join('');
+      }
+
+      updateProgress() {
+        const total = this.steps.length;
+        const current = this.currentStep + 1;
+        const pct = total > 0 ? (current / total) * 100 : 0;
+        this.progressFill.style.width = pct + '%';
+        this.progressLabel.textContent = `${current} / ${total}`;
+      }
+
+      updatePlayBtn() {
+        this.playBtn.textContent = this.isPlaying ? '⏸' : '▶';
+        this.playBtn.style.boxShadow = this.isPlaying ? '0 0 15px rgba(63,185,80,0.6)' : 'none';
+      }
+
+      highlightComment(idx) {
+        this.steps.forEach((_, i) => {
+          const el = document.getElementById(`comment-${i}`);
+          el.classList.remove('active', 'past');
+          if (i === idx) el.classList.add('active');
+          else if (i < idx) el.classList.add('past');
+        });
+        if (idx >= 0) {
+          const el = document.getElementById(`comment-${idx}`);
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+
+      clearTimers() {
+        clearTimeout(this.typeTimer);
+        this.pendingTimers.forEach(t => clearTimeout(t));
+        this.pendingTimers = [];
+      }
+
+      delay(ms) {
+        return new Promise(resolve => {
+          const t = setTimeout(resolve, ms / this.speed);
+          this.pendingTimers.push(t);
+        });
+      }
+
+      async typeText(text, container, charDelay, className) {
+        return new Promise(resolve => {
+          let i = 0;
+          const span = document.createElement('span');
+          span.className = className;
+          container.appendChild(span);
+          const cursor = document.createElement('span');
+          cursor.className = 'cursor';
+          container.appendChild(cursor);
+
+          const type = () => {
+            if (i < text.length) {
+              span.textContent += text[i]; i++;
+              this.termEl.scrollTop = this.termEl.scrollHeight;
+              this.typeTimer = setTimeout(type, charDelay / this.speed);
+            } else {
+              cursor.remove();
+              resolve();
+            }
+          };
+          type();
+        });
+      }
+
+      colorClass(line) {
+        if (line.includes('Error') || line.includes('panic') || line.includes('fault') || line.includes('Unhandled')) return 'term-error';
+        if (line.startsWith('+')) return 'term-diff-add';
+        if (line.startsWith('-')) return 'term-diff-del';
+        if (line.includes('Info :') || line.includes('OK') || line.includes('connected')) return 'term-info';
+        if (line.includes('Starting kernel') || line.includes('Welcome to') || line.includes('login:') || line.includes('Serial:') || line.includes('ttyAMA0') || line.includes('ttyS0')) return 'term-highlight';
+        return 'term-output';
+      }
+
+      appendOutput(text) {
+        if (!text) return;
+        text.split('\\n').forEach(line => {
+          const div = document.createElement('div');
+          div.className = 'term-line';
+          const span = document.createElement('span');
+          span.className = this.colorClass(line);
+          span.textContent = line;
+          div.appendChild(span);
+          this.termEl.appendChild(div);
+        });
+        this.termEl.scrollTop = this.termEl.scrollHeight;
+      }
+
+      renderTerminal(step, animated) {
+        this.termEl.innerHTML = '';
+        if (!step.terminal) {
+          this.termEl.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-family:Inter,sans-serif;font-size:14px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">💬</div>阅读右侧思考过程</div></div>`;
+          return Promise.resolve();
+        }
+
+        this.termEl.classList.add('term-fade-in');
+        setTimeout(() => this.termEl.classList.remove('term-fade-in'), 400);
+
+        const t = step.terminal;
+
+        if (!animated) {
+          if (t.command) {
+            const lineDiv = document.createElement('div');
+            lineDiv.className = 'term-line';
+            if (t.prompt) {
+              const ps = document.createElement('span');
+              ps.className = 'term-prompt';
+              ps.textContent = t.prompt;
+              lineDiv.appendChild(ps);
+            }
+            const cs = document.createElement('span');
+            cs.className = 'term-command';
+            cs.textContent = t.command;
+            lineDiv.appendChild(cs);
+            this.termEl.appendChild(lineDiv);
+          }
+          this.appendOutput(t.output);
+          return Promise.resolve();
+        }
+
+        return (async () => {
+          if (t.command) {
+            const lineDiv = document.createElement('div');
+            lineDiv.className = 'term-line';
+            if (t.prompt) {
+              const ps = document.createElement('span');
+              ps.className = 'term-prompt';
+              ps.textContent = t.prompt;
+              lineDiv.appendChild(ps);
+            }
+            this.termEl.appendChild(lineDiv);
+            await this.typeText(t.command, lineDiv, 35, 'term-command');
+            await this.delay(400);
+          }
+          this.appendOutput(t.output);
+          await this.delay(2500);
+        })();
+      }
+
+      showStep(idx, animated) {
+        if (idx < 0 || idx >= this.steps.length) return Promise.resolve();
+        this.currentStep = idx;
+        this.updateProgress();
+        this.headerStep.textContent = this.steps[idx].title;
+        this.highlightComment(idx);
+
+        return this.renderTerminal(this.steps[idx], animated);
+      }
+
+      async play() {
+        this.isPlaying = true;
+        this.updatePlayBtn();
+        while (this.isPlaying && this.currentStep < this.steps.length - 1) {
+          await this.showStep(this.currentStep + 1, true);
+          if (!this.isPlaying) break;
+        }
+        this.isPlaying = false;
+        this.updatePlayBtn();
+      }
+
+      pause() {
+        this.isPlaying = false;
+        this.clearTimers();
+        this.updatePlayBtn();
+      }
+
+      togglePlay() {
+        if (this.isPlaying) {
+          this.pause();
+        } else {
+          if (this.currentStep >= this.steps.length - 1) this.currentStep = -1;
+          this.play();
+        }
+      }
+
+      prevStep() { this.pause(); if (this.currentStep > 0) this.showStep(this.currentStep - 1, false); }
+      nextStep() { this.pause(); if (this.currentStep < this.steps.length - 1) this.showStep(this.currentStep + 1, false); }
+
+      cycleSpeed() {
+        this.speedIdx = (this.speedIdx + 1) % this.speeds.length;
+        this.speed = this.speeds[this.speedIdx];
+        this.speedBtn.textContent = this.speed + 'x';
+      }
+
+      seekFromClick(e) {
+        const rect = document.getElementById('progressBar').getBoundingClientRect();
+        const idx = Math.round(((e.clientX - rect.left) / rect.width) * (this.steps.length - 1));
+        this.pause();
+        this.showStep(Math.max(0, Math.min(idx, this.steps.length - 1)), false);
+      }
+    }
+
+    const player = new TerminalPlayer(STEPS);
+
+    function startPlayback() {
+      const splash = document.getElementById('splash');
+      if(splash) splash.classList.add('hidden');
+      setTimeout(() => player.play(), 400);
+    }
+
+    document.addEventListener('keydown', e => {
+      const splashHidden = document.getElementById('splash') && document.getElementById('splash').classList.contains('hidden');
+      if (splashHidden) {
+        if (e.code === 'Space') { e.preventDefault(); player.togglePlay(); }
+        if (e.code === 'ArrowLeft') { e.preventDefault(); player.prevStep(); }
+        if (e.code === 'ArrowRight') { e.preventDefault(); player.nextStep(); }
+      } else {
+        if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); startPlayback(); }
+      }
+    });
+
+  </script>
+</body>
+</html>
