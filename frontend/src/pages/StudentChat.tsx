@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, KeyboardEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { studentLogin, studentRegister, studentChangePassword, studentChat, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, studentListSessions, StudentHistoryMessage, Citation, StudentSession } from '../api'
+import { studentLogin, studentRegister, studentChangePassword, studentChatWithFile, studentNewSession, studentHistory, startChallenge, getActiveChallenge, startOnboarding, getActiveOnboarding, studentListSessions, StudentHistoryMessage, Citation, StudentSession } from '../api'
 
 type Stage = 'unregistered' | 'chatting'
 type AuthTab = 'login' | 'register'
@@ -74,6 +74,8 @@ export default function StudentChat() {
   const [loginError, setLoginError] = useState('')
   const [challenge, setChallenge] = useState<ChallengeState | null>(null)
   const [hasActiveChallenge, setHasActiveChallenge] = useState(false)
+  const [onboarding, setOnboarding] = useState<ChallengeState | null>(null)
+  const [hasActiveOnboarding, setHasActiveOnboarding] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [fileError, setFileError] = useState('')
@@ -101,6 +103,7 @@ export default function StudentChat() {
     if (stage === 'chatting') {
       loadHistory()
       checkActiveChallenge()
+      checkActiveOnboarding()
     }
   }, [stage])
 
@@ -132,6 +135,15 @@ export default function StudentChat() {
     try {
       const res = await getActiveChallenge()
       setHasActiveChallenge(!!res.data)
+    } catch {
+      // ignore
+    }
+  }
+
+  async function checkActiveOnboarding() {
+    try {
+      const res = await getActiveOnboarding()
+      setHasActiveOnboarding(!!res.data)
     } catch {
       // ignore
     }
@@ -298,21 +310,92 @@ export default function StudentChat() {
     setLoading(true)
 
     try {
-      let res
-      const sessionId = challenge ? challenge.session_id : currentSessionId ?? undefined
+      const sessionId = challenge ? challenge.session_id : onboarding ? onboarding.session_id : currentSessionId ?? undefined
+
       if (fileToSend) {
-        res = await studentChatWithFile(text, fileToSend, sessionId)
+        // File upload: use non-streaming endpoint
+        const res = await studentChatWithFile(text, fileToSend, sessionId)
+        if (!challenge && !onboarding) setCurrentSessionId(res.data.session_id)
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: res.data.reply,
+          session_id: res.data.session_id,
+          system_prompt: res.data.system_prompt,
+          citations: res.data.citations ?? [],
+        }])
       } else {
-        res = await studentChat(text, sessionId)
+        // Regular message: use SSE streaming
+        const token = localStorage.getItem('student_token')
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (token) headers['Authorization'] = `Bearer ${token}`
+
+        const resp = await fetch('/api/student/chat/stream', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ message: text, session_id: sessionId }),
+        })
+        if (!resp.ok) throw new Error('API error')
+
+        // Add empty assistant message for progressive update
+        setMessages(prev => [...prev, { role: 'assistant', content: '' }])
+
+        const reader = resp.body!.getReader()
+        const decoder = new TextDecoder()
+        let sseBuffer = ''
+        let fullText = ''
+        let meta: { session_id?: number; system_prompt?: string; citations?: Citation[] } = {}
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sseBuffer += decoder.decode(value, { stream: true })
+
+          const sseLines = sseBuffer.split('\n')
+          sseBuffer = sseLines.pop() || ''
+
+          for (const line of sseLines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const evt = JSON.parse(line.slice(6))
+              if (evt.t) {
+                fullText += evt.t
+                setMessages(prev => {
+                  const updated = [...prev]
+                  const last = updated[updated.length - 1]
+                  if (last && last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: fullText }
+                  }
+                  return updated
+                })
+              }
+              if (evt.done) {
+                meta = {
+                  session_id: evt.session_id,
+                  system_prompt: evt.system_prompt,
+                  citations: evt.citations ?? [],
+                }
+              }
+            } catch (_) {}
+          }
+        }
+
+        // Final update with metadata
+        if (!challenge && !onboarding && meta.session_id) setCurrentSessionId(meta.session_id)
+        setMessages(prev => {
+          const updated = [...prev]
+          const last = updated[updated.length - 1]
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = {
+              ...last,
+              content: fullText || '出错了，请重试',
+              session_id: meta.session_id,
+              system_prompt: meta.system_prompt,
+              citations: meta.citations ?? [],
+            }
+          }
+          return updated
+        })
       }
-      if (!challenge) setCurrentSessionId(res.data.session_id)
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: res.data.reply,
-        session_id: res.data.session_id,
-        system_prompt: res.data.system_prompt,
-        citations: res.data.citations ?? [],
-      }])
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: '出错了，请重试' }])
     } finally {
@@ -337,6 +420,8 @@ export default function StudentChat() {
     setName('')
     setChallenge(null)
     setHasActiveChallenge(false)
+    setOnboarding(null)
+    setHasActiveOnboarding(false)
     setCurrentSessionId(null)
     setPendingFile(null)
     setFileError('')
@@ -378,6 +463,28 @@ export default function StudentChat() {
   function handleExitChallenge() {
     setChallenge(null)
     setHasActiveChallenge(false)
+    setPendingFile(null)
+    loadHistory()
+  }
+
+  async function handleEnterOnboarding() {
+    setLoading(true)
+    try {
+      const res = await startOnboarding()
+      const os: ChallengeState = { session_id: res.data.session_id, started_at: res.data.started_at }
+      setOnboarding(os)
+      setHasActiveOnboarding(false)
+      await loadHistory(res.data.session_id)
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function handleExitOnboarding() {
+    setOnboarding(null)
+    setHasActiveOnboarding(false)
     setPendingFile(null)
     loadHistory()
   }
@@ -440,12 +547,13 @@ export default function StudentChat() {
     )
   }
 
-  const accentColor = challenge ? '#fa8c16' : '#1677ff'
+  const activeMode = challenge ? 'challenge' : onboarding ? 'onboarding' : null
+  const accentColor = challenge ? '#fa8c16' : onboarding ? '#52c41a' : '#1677ff'
 
   return (
     <>
       {/* Session history sidebar */}
-      {sidebarOpen && !challenge && (
+      {sidebarOpen && !activeMode && (
         <>
           <div style={sidebarStyles.backdrop} onClick={() => setSidebarOpen(false)} />
           <div style={sidebarStyles.panel}>
@@ -468,6 +576,7 @@ export default function StudentChat() {
                   <div style={sidebarStyles.itemDate}>
                     {formatSessionDate(s.started_at)}
                     {s.mode === 'challenge' && <span style={sidebarStyles.modeBadge}>⚡挑战</span>}
+                    {s.mode === 'onboarding' && <span style={sidebarStyles.onboardingBadge}>🎯初心</span>}
                   </div>
                   {s.last_message && (
                     <div style={sidebarStyles.itemPreview}>{s.last_message}</div>
@@ -498,12 +607,17 @@ export default function StudentChat() {
         )}
 
         {/* Header */}
-        <div style={{ ...styles.header, background: challenge ? '#fff7e6' : '#fff', borderBottom: `1px solid ${challenge ? '#ffd591' : '#e8e8e8'}` }}>
+        <div style={{ ...styles.header, background: challenge ? '#fff7e6' : onboarding ? '#f6ffed' : '#fff', borderBottom: `1px solid ${challenge ? '#ffd591' : onboarding ? '#b7eb8f' : '#e8e8e8'}` }}>
           <span style={styles.headerName}>{name}</span>
           {challenge ? (
             <>
               <span style={styles.challengeBadge}>⚡ 挑战模式</span>
               <button style={styles.exitChallengeBtn} onClick={handleExitChallenge}>退出挑战</button>
+            </>
+          ) : onboarding ? (
+            <>
+              <span style={styles.onboardingBadge}>🎯 学习初心</span>
+              <button style={styles.exitChallengeBtn} onClick={handleExitOnboarding}>退出初心对话</button>
             </>
           ) : (
             <>
@@ -524,6 +638,14 @@ export default function StudentChat() {
               <button style={styles.challengeBtn} onClick={handleEnterChallenge} disabled={loading}>
                 ⚡ 挑战模式
               </button>
+              {hasActiveOnboarding && (
+                <button style={{ ...styles.onboardingBtn, background: '#389e0d' }} onClick={handleEnterOnboarding} disabled={loading}>
+                  ↩ 继续初心
+                </button>
+              )}
+              <button style={styles.onboardingBtn} onClick={handleEnterOnboarding} disabled={loading}>
+                🎯 学习初心
+              </button>
             </>
           )}
           <button style={styles.switchBtn} onClick={handleSwitchName}>换个账号</button>
@@ -534,7 +656,7 @@ export default function StudentChat() {
         <div style={styles.messageList}>
           {messages.length === 0 && !loading && (
             <p style={styles.emptyHint}>
-              {challenge ? '挑战模式已就绪，发送任意消息开始！' : '发送消息开始对话，或点击 📎 上传教案文件'}
+              {challenge ? '挑战模式已就绪，发送任意消息开始！' : onboarding ? '学习初心对话已就绪，发送任意消息开始！' : '发送消息开始对话，或点击 📎 上传教案文件'}
             </p>
           )}
           {messages.map((msg, i) => (
@@ -558,7 +680,7 @@ export default function StudentChat() {
               </div>
             </div>
           ))}
-          {loading && (
+          {loading && (messages.length === 0 || messages[messages.length - 1]?.role === 'user') && (
             <div style={styles.aiRow}>
               <div style={{ ...styles.aiBubble, color: '#999' }}>思考中...</div>
             </div>
@@ -582,7 +704,7 @@ export default function StudentChat() {
         )}
 
         {/* Input area */}
-        <div style={{ ...styles.inputArea, borderTop: `1px solid ${challenge ? '#ffd591' : '#e8e8e8'}` }}>
+        <div style={{ ...styles.inputArea, borderTop: `1px solid ${challenge ? '#ffd591' : onboarding ? '#b7eb8f' : '#e8e8e8'}` }}>
           {/* Hidden file input */}
           <input
             ref={fileInputRef}
@@ -739,6 +861,8 @@ const styles: Record<string, React.CSSProperties> = {
   newSessionBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
   historyBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#555', fontWeight: 500 },
   challengeBtn: { background: '#1677ff', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+  onboardingBtn: { background: '#52c41a', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600 },
+  onboardingBadge: { background: '#f6ffed', color: '#389e0d', border: '1px solid #b7eb8f', borderRadius: 12, padding: '2px 12px', fontSize: 13, fontWeight: 600 },
   exitChallengeBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666' },
   switchBtn: { background: 'none', border: '1px solid #d9d9d9', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13, color: '#666', marginLeft: 'auto' },
   messageList: { flex: 1, overflowY: 'auto', padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 12 },
@@ -803,4 +927,5 @@ const sidebarStyles: Record<string, React.CSSProperties> = {
   itemPreview: { fontSize: 13, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 },
   itemCount: { fontSize: 11, color: '#bbb' },
   modeBadge: { background: '#fff7e6', color: '#d46b08', border: '1px solid #ffd591', borderRadius: 4, padding: '0 4px', fontSize: 11 },
+  onboardingBadge: { background: '#f6ffed', color: '#389e0d', border: '1px solid #b7eb8f', borderRadius: 4, padding: '0 4px', fontSize: 11 },
 }

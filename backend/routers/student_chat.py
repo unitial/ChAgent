@@ -404,6 +404,73 @@ async def student_chat(
     return {"reply": reply, "session_id": session.id, "session_mode": session.mode, "system_prompt": system_prompt, "doc_filename": doc_filename, "citations": citations}
 
 
+@router.post("/chat/stream")
+async def student_chat_stream(
+    req: ChatRequest,
+    background_tasks: BackgroundTasks,
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """SSE streaming variant of /chat."""
+    import json as _json
+    from starlette.responses import StreamingResponse
+
+    text = req.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    if req.session_id is not None:
+        session = db.query(ConvSession).filter(
+            ConvSession.id == req.session_id,
+            ConvSession.student_id == student.id,
+        ).first()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        session = get_or_create_session(db, student)
+
+    check_daily_limit(db, student)
+
+    session_id = session.id
+    student_id = student.id
+
+    def generate():
+        full_reply = []
+        system_prompt = ""
+        citations = []
+        input_tokens = 0
+        output_tokens = 0
+
+        for kind, data in agent_service.chat_stream(db, student, session, text):
+            if kind == "setup":
+                system_prompt = data["system_prompt"]
+                citations = data["citations"]
+            elif kind == "delta":
+                full_reply.append(data)
+                yield f"data: {_json.dumps({'t': data}, ensure_ascii=False)}\n\n"
+            elif kind == "done":
+                input_tokens = data.get("input_tokens", 0)
+                output_tokens = data.get("output_tokens", 0)
+
+        # Send final event with metadata
+        yield f"data: {_json.dumps({'done': True, 'session_id': session_id, 'system_prompt': system_prompt, 'citations': citations}, ensure_ascii=False)}\n\n"
+
+        # Record to DB
+        reply = "".join(full_reply)
+        db.add(Conversation(student_id=student_id, session_id=session_id, role="user", content=text))
+        db.add(Conversation(
+            student_id=student_id, session_id=session_id,
+            role="assistant", content=reply,
+            input_tokens=input_tokens, output_tokens=output_tokens,
+            system_prompt=system_prompt,
+        ))
+        db.commit()
+
+        background_tasks.add_task(trigger_session_summary, student_id)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
 @router.post("/chat/upload", response_model=ChatResponse)
 async def student_chat_upload(
     background_tasks: BackgroundTasks,
@@ -619,3 +686,88 @@ def challenge_active(
         "mode": existing.mode,
         "started_at": existing.started_at.isoformat(),
     }
+
+
+# --- Onboarding ("学习初心") mode ---
+
+@router.post("/onboarding/start", response_model=ChallengeSessionOut)
+def onboarding_start(
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """Start or resume an onboarding session to discover learning motivation."""
+    existing = (
+        db.query(ConvSession)
+        .filter(
+            ConvSession.student_id == student.id,
+            ConvSession.mode == "onboarding",
+            ConvSession.summarized == False,  # noqa: E712
+        )
+        .order_by(ConvSession.started_at.desc())
+        .first()
+    )
+    if existing:
+        return {
+            "session_id": existing.id,
+            "mode": existing.mode,
+            "started_at": existing.started_at.isoformat(),
+        }
+
+    session = ConvSession(student_id=student.id, mode="onboarding")
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+    # Get student profile context (may include previous learning-motivation aspect)
+    profile_context = get_profile_context_for_prompt(student.id)
+
+    kickoff = f"""（系统提示：学习初心对话已启动。
+
+**学生信息**：
+- 姓名：{student.name}
+{('- 已有画像：\n' + profile_context) if profile_context else '- 暂无画像数据（新学生）'}
+
+请用中文向学生打招呼，自我介绍你是课程AI助教，简要说明你想花几分钟和他/她聊聊学习操作系统这门课的想法和期望。然后从一个轻松的问题开始，比如了解学生的背景或为什么选了这门课。
+
+**注意**：这是"学习初心"对话的第一轮，请保持轻松友好，不要一上来就列出很多问题。）"""
+
+    reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, kickoff)
+    db.add(Conversation(
+        student_id=student.id, session_id=session.id,
+        role="assistant", content=reply,
+        input_tokens=input_tokens, output_tokens=output_tokens,
+        system_prompt=system_prompt,
+    ))
+    db.commit()
+
+    return {
+        "session_id": session.id,
+        "mode": session.mode,
+        "started_at": session.started_at.isoformat(),
+    }
+
+
+@router.get("/onboarding/active", response_model=Optional[ChallengeSessionOut])
+def onboarding_active(
+    db: DBSession = Depends(get_db),
+    student: Student = Depends(get_current_student),
+):
+    """Check if there is an ongoing (not summarized) onboarding session."""
+    existing = (
+        db.query(ConvSession)
+        .filter(
+            ConvSession.student_id == student.id,
+            ConvSession.mode == "onboarding",
+            ConvSession.summarized == False,  # noqa: E712
+        )
+        .order_by(ConvSession.started_at.desc())
+        .first()
+    )
+    if not existing:
+        return None
+    return {
+        "session_id": existing.id,
+        "mode": existing.mode,
+        "started_at": existing.started_at.isoformat(),
+    }
+

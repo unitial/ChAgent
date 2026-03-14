@@ -3,7 +3,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session as DBSession
 from models.student import Student
 from models.conversation import Session as ConvSession, Conversation
-from services.skills import get_enabled_skills_prompt, get_challenge_skill_prompt
+from services.skills import get_enabled_skills_prompt, get_challenge_skill_prompt, get_onboarding_skill_prompt
 from services.profile import get_profile_context_for_prompt
 from services.llm import llm_chat
 
@@ -62,6 +62,10 @@ def build_system_prompt(db: DBSession, student: Student, session: ConvSession = 
         challenge_block = get_challenge_skill_prompt()
         if challenge_block:
             parts.append(challenge_block)
+    if session and getattr(session, "mode", None) == "onboarding":
+        onboarding_block = get_onboarding_skill_prompt()
+        if onboarding_block:
+            parts.append(onboarding_block)
     if retrieval_context:
         parts.append(retrieval_context)
     profile_block = _build_profile_context(student)
@@ -106,6 +110,33 @@ def chat(db: DBSession, student: Student, session: ConvSession, user_message: st
     doc = document if document is not None else _load_session_document(session)
     text, input_tokens, output_tokens = llm_chat(db, system_prompt, messages, document=doc)
     return text, input_tokens, output_tokens, system_prompt, citations
+
+
+def chat_stream(db: DBSession, student: Student, session: ConvSession, user_message: str, document: dict | None = None):
+    """Streaming variant of chat(). Yields (type, data) tuples:
+       ('setup', {system_prompt, citations}) first,
+       ('delta', str) for text chunks,
+       ('done', {input_tokens, output_tokens}) at end.
+    """
+    from typing import Generator
+    from services.retrieval import search
+    from services.llm import llm_chat_stream
+
+    citations = search(user_message)
+    retrieval_context = _format_citations_for_prompt(citations) if citations else ""
+
+    history = get_recent_history(db, session)
+    messages = history + [{"role": "user", "content": user_message}]
+    system_prompt = build_system_prompt(db, student, session, messages, retrieval_context=retrieval_context)
+    doc = document if document is not None else _load_session_document(session)
+
+    yield ("setup", {"system_prompt": system_prompt, "citations": citations})
+
+    for chunk in llm_chat_stream(db, system_prompt, messages, document=doc):
+        if isinstance(chunk, dict):
+            yield ("done", chunk)
+        else:
+            yield ("delta", chunk)
 
 
 def _format_citations_for_prompt(citations: list[dict]) -> str:
