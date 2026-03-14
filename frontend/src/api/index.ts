@@ -246,6 +246,12 @@ export const startChallenge = () =>
 export const getActiveChallenge = () =>
   studentApi.get<ChallengeSession | null>('/student/challenge/active')
 
+export const startOnboarding = () =>
+  studentApi.post<ChallengeSession>('/student/onboarding/start')
+
+export const getActiveOnboarding = () =>
+  studentApi.get<ChallengeSession | null>('/student/onboarding/active')
+
 // Textbooks (teacher)
 export const getTextbooks = () => api.get<Textbook[]>('/textbooks')
 export const getTextbook = (id: number) => api.get<Textbook>(`/textbooks/${id}`)

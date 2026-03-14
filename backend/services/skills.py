@@ -153,6 +153,14 @@ def _skill_matches(skill: dict, conv_text: str) -> bool:
     return any(kw.lower() in conv_lower for kw in _extract_keywords(skill))
 
 
+def get_onboarding_skill_prompt() -> str:
+    """Return the onboarding mode skill content to inject when in onboarding mode."""
+    skills = [s for s in list_skills() if s["enabled"] and s["type"] == "onboarding"]
+    if not skills:
+        return ""
+    return "\n## Onboarding Mode Instructions\n\n" + skills[0]["content"]
+
+
 def get_challenge_skill_prompt() -> str:
     """Return the challenge mode skill content to inject when in challenge mode."""
     skills = [s for s in list_skills() if s["enabled"] and s["type"] == "challenge"]

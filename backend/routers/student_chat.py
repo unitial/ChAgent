@@ -721,11 +721,12 @@ def onboarding_start(
     # Get student profile context (may include previous learning-motivation aspect)
     profile_context = get_profile_context_for_prompt(student.id)
 
+    profile_line = ('- 已有画像：\n' + profile_context) if profile_context else '- 暂无画像数据（新学生）'
     kickoff = f"""（系统提示：学习初心对话已启动。
 
 **学生信息**：
 - 姓名：{student.name}
-{('- 已有画像：\n' + profile_context) if profile_context else '- 暂无画像数据（新学生）'}
+{profile_line}
 
 请用中文向学生打招呼，自我介绍你是课程AI助教，简要说明你想花几分钟和他/她聊聊学习操作系统这门课的想法和期望。然后从一个轻松的问题开始，比如了解学生的背景或为什么选了这门课。
 

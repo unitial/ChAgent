@@ -330,9 +330,10 @@ procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
 12  0      0  2109M  120M  4100M    0    0     0     0 80k 120k 35 60  5  0  0
 14  0      0  2109M  120M  4100M    0    0     0     0 82k 125k 33 62  5  0  0`
         },
-        commentary: `<p><strong>场景：</strong>我们的 Redis 分布式集群在最新采购的 128 核 ARM64 服务器上进行疯狂压测。</p>
-<p class="dialogue"><span class="speaker">小宇：</span>"老王，我彻底抓狂了！按理说这种神级配置跑 Redis 这种纯内存数据库应该是碾压局，可单实例 QPS 就是死死卡在 80 万上不去！"</p>
-<p class="dialogue"><span class="speaker">小宇：</span>"你看 <code>vmstat</code>：<code>us</code> (User 用户态) 只有 35%，而 <code>sy</code>（System 内核态）竟然高达 60%！Redis 的核心逻辑全在用户态里，现在 sy 反倒比 us 高出一大截，到底是谁偷走了 CPU 算力？"</p>`
+        commentary: `<p><strong>场景：</strong>我们的 Redis 网关在 8 核 ARM64 服务器上进行疯狂压测。</p>
+<p class="dialogue"><span class="speaker">小宇：</span>"老王，我彻底抓狂了！按理说 8 核配置单实例跑 Redis 碾压没问题。可不管怎么调优，QPS 就是死死卡在 80 万上不去！"</p>
+<p class="dialogue"><span class="speaker">小宇：</span>"你看 <code>vmstat</code>：<code>us</code> 只有 35%，而 <code>sy</code>（内核态）高达 60%！而且上下文切换 <code>cs</code> 每秒 12 万次，是不是频繁的 Context Switch 把 CPU 吃光了？"</p>
+<p class="dialogue"><span class="speaker">老王：</span>"这是操作系统初学者常犯的误区，8 核压测 12 万次 <code>cs</code> 并不算高。真正吃掉 60% <code>sy</code> 的<b>不是进程级上下文切换</b>，而是海量请求引发的每秒上百万次的<b>特权级切换 (Mode Switch)</b>！"</p>`
       },
       {
         title: "🔍 perf top：追查 CPU 窃贼",
@@ -364,8 +365,8 @@ Overhead  Shared Object       Symbol
 <p>xcall 的核心思想是**“VIP 快速绿色通道”**。既然高频系统调用（比如读取时间、网络数据）极少阻塞，那为什么传统内核非要保存 30 多个通用寄存器呢？这就引出了一个底层设计问题：</p>
 <p class="insight">💡 <b>关键在于利用 C 语言的调用约定 (ABI)</b><br>
 传统系统调用视用户进程为黑盒，“宁错杀不放过”地拍下 <code>pt_regs</code> 快照。<br>
-而 xcall <b>主动信任并利用了用户态 C 函数的调用约定</b>。按照编译器规则，函数调用默认允许破坏“暂存寄存器”（如 X0~X7），其他寄存器由调用者负责。只要 xcall 内部的极简 C 函数自己老实听话不去动非易失寄存器，它就能像个普通的 C 函数一样执行！<br>
-因此，xcall 在陷入内核时，只需要极简保存 3~4 个受特权级切换波及的底层寄存器，连 <code>pt_regs</code> 都不用建，大幅减少压栈内存 IO。</p>
+而 xcall <b>主动信任并利用了用户态 C 函数的调用约定</b>。按照编译器规则，函数调用默认允许破坏“暂存寄存器”（如 X0~X7、X9~X15），其他非易失寄存器由调用者负责。只要 xcall 内部的极简 C 函数自己不去动非易失寄存器，它就能像个普通 C 函数一样执行！<br>
+因此，xcall 在陷入内核时，仅保存极少数状态寄存器 (如 ELR_EL1 和需要手动备份的 SP_EL0)，连 <code>pt_regs</code> 都不用建，大幅减少压栈内存 IO。</p>
 <p>此外，xcall 还<b>彻底抛弃了慢速的信号与调度检查包袱</b>，通过热指令替换，直通对应的极简版内联 Syscall 函数，完事后光速降级返回 EL0。</p>`
       },
       {
@@ -421,8 +422,10 @@ Overhead  Shared Object       Symbol
    1.50%  [kernel]            [k] do_el0_svc`
         },
         commentary: `<p class="conclusion">✨ **小宇彻底懂了**<br>
-曾经盘踞在 CPU 消耗榜头两名的 <code>el0_sync</code> + <code>do_el0_svc</code> （共 28%）降到了 3.6%！这与 vmstat 中 sy 下降的幅度完美对应。<br>
-xcall 的设计哲学：<b>不干涉内核的实际工作，只精准砍掉“进出城门”的无用开销</b>。</p>`
+曾经盘踞在 CPU 消耗榜头两名 <code>el0_sync</code> + <code>do_el0_svc</code>（共 28%）直降到 3.6%！<br>
+xcall 只精准砍掉进出内核框架的无用开销，不干涉内核真正的通信和数据拷贝工作。</p>
+<p class="insight">🛡️ <b>防杠指南：遇到必须休眠的调用怎么办？</b><br>
+你没发现上一步有 <code>xcall_misses: 231405</code> 吗？当 xcall 的极简路径发现必须陷入休眠（比如没有数据可读）时，它会立刻“悬崖勒马”，<b>紧急补齐所有 <code>pt_regs</code> 寄存器信息，降级退回传统慢速路径去安全排队休眠。</b>极速通道只为不阻塞的操作开放！</p>`
       },
       {
         title: "🎓 进阶探讨：为什么不全用 xcall？",

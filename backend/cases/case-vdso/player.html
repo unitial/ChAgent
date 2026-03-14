@@ -925,48 +925,57 @@
     </div>
 
     <script>
-        function handleChatKeyPress(e) { if (e.key === 'Enter') sendChatMessage() }
-        function sendChatMessage(textOverride) { const input = document.getElementById('chatInput'); const text = textOverride || input.value.trim(); if (!text) return; appendMessage('user', text); if (!textOverride) input.value = ''; showTypingIndicator(); setTimeout(() => { simulateAIResponse(text) }, 600 + Math.random() * 800) }
-        function appendMessage(role, text) { const container = document.getElementById('chatMessages'); const typing = document.getElementById('typingIndicator'); if (typing) typing.remove(); const msgDiv = document.createElement('div'); msgDiv.className = `chat-msg ${role}`; msgDiv.innerHTML = `<div class="chat-bubble">${text.replace(/\\n/g, '<br>')}</div>`; container.appendChild(msgDiv); container.scrollTop = container.scrollHeight; return msgDiv }
-        function showTypingIndicator() { const container = document.getElementById('chatMessages'); const msgDiv = document.createElement('div'); msgDiv.className = 'chat-msg ai'; msgDiv.id = 'typingIndicator'; msgDiv.innerHTML = '<div class="chat-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>'; container.appendChild(msgDiv); container.scrollTop = container.scrollHeight }
+        const chatHistory = [];
 
-        function simulateAIResponse(query) {
-            let reply = "这是一个好问题！在真实环境下，我可以接入 AI API 为你深度解答关于 vDSO、系统调用优化和虚拟内存的问题。";
-            if (query.includes("vDSO") || query.includes("vdso")) {
-                reply = "**vDSO（virtual Dynamic Shared Object）** 是 Linux 内核自动映射到每个进程地址空间中的一小段共享库（通常 4-8KB）。\n\nARM64 上导出的函数为 `__kernel_clock_gettime`、`__kernel_gettimeofday`、`__kernel_clock_getres`、`__kernel_rt_sigreturn`（x86 上则是 `__vdso_clock_gettime` 等）。\n\n当你调用这些函数时，glibc 会优先使用 vDSO 中的版本，完全在用户态（EL0）完成，不需要 `svc #0` 陷入内核。";
-            } else if (query.includes("vvar")) {
-                reply = "**vvar（variable data page）** 是内核映射到用户空间的**只读数据页**，与 vDSO 配合使用。\n\n内核的定时器中断（ARM64 上是 arch_timer）会定期更新 vvar 页中的时间数据：当前秒数、纳秒偏移、CNTVCT 校准参数等。vDSO 中的代码直接从 vvar 页读取这些数据。\n\n可以把 vvar 理解为内核贴在用户空间的一块**只读公告板**：内核负责更新内容，用户态代码只需要看一眼就好。";
-            } else if (query.includes("CNTVCT") || query.includes("cntvct") || query.includes("Generic Timer") || query.includes("计时器")) {
-                reply = "**CNTVCT_EL0（Counter-timer Virtual Count register）** 是 ARM 架构 Generic Timer 提供的虚拟计数器寄存器。\n\n关键特性：\n- **EL0 可读**：通过 `mrs x0, cntvct_el0` 指令在用户态直接读取\n- **固定频率**：由 `CNTFRQ_EL0` 给出（如鲲鹏 920 为 25MHz）\n- **无需特权级切换**：不需要从 EL0 切换到 EL1\n\nvDSO 的 `__kernel_clock_gettime()` 正是利用 CNTVCT_EL0 读取硬件时钟，再结合 vvar 中的校准参数换算成纳秒。\n\n📌 x86 上对应的是 **RDTSC** 指令（Read Time-Stamp Counter）。";
-            } else if (query.includes("RDTSC") || query.includes("rdtsc") || query.includes("TSC") || query.includes("时间戳计数器")) {
-                reply = "**RDTSC（Read Time-Stamp Counter）** 是 x86 CPU 的用户态指令，用于读取 CPU 内部的时钟周期计数器。\n\n它是 ARM64 上 `CNTVCT_EL0` 的 x86 对应物：\n- 不需要特权级切换（Ring 3 可执行）\n- 极快（~10-20 个时钟周期）\n- 高精度（分辨率等于 CPU 主频）\n\n在 ARM64 上，vDSO 使用 `mrs x0, cntvct_el0` 代替 `rdtsc` 来读取硬件时钟。两者在 vDSO 框架中的角色完全相同——提供用户态可读的高精度时钟源。";
-            } else if (query.includes("SeqLock") || query.includes("seqlock") || query.includes("序列锁") || query.includes("无锁")) {
-                reply = "**SeqLock（序列锁）** 是 vDSO 使用的无锁同步机制，适合**一个写者、多个读者**的场景。\n\n工作原理：\n1. 写者（内核）更新数据前将序列号 +1（变为奇数）\n2. 写者更新完数据后再将序列号 +1（变回偶数）\n3. 读者在读取前后各检查一次序列号\n\nARM64 特殊之处：需要 `dmb ishld`（数据内存屏障）来保证读取顺序正确——ARM 是弱内存序架构。x86 是强内存序，load→load 天然有序，不需要额外屏障。";
-            } else if (query.includes("系统调用") || query.includes("syscall") || query.includes("内核态")) {
-                reply = "**系统调用** 是用户程序请求内核服务的标准方式。\n\nARM64 上的一次系统调用：\n1. 执行 `svc #0` 指令，CPU 从 EL0 切换到 EL1\n2. 进入 `el0_svc_common` 入口\n3. 保存用户态寄存器到内核栈\n4. 执行内核处理函数\n5. `eret` 返回 EL0\n\n典型延迟：~150-300ns（ARM64），~100-200ns（x86 未打补丁），~300-500ns（x86 KPTI 补丁后）。\n\n对于 `clock_gettime` 这种只读几个变量的操作，系统调用的切换开销远大于实际计算量。";
-            } else if (query.includes("静态链接") || query.includes("static") || query.includes("动态链接")) {
-                reply = "**静态链接 vs 动态链接** 对 vDSO 有重要影响：\n\n**动态链接**（默认）：glibc 在程序启动时通过辅助向量获取 vDSO 地址，将 `clock_gettime` 的实现替换为 vDSO 版本。\n\n**静态链接**（`-static`）：glibc 的静态版本直接使用 `svc #0`（ARM64）/ `syscall`（x86）指令。每次调用都要陷入内核。\n\n在 ARM64 鲲鹏 920 上的实测差距：~10 倍。x86 + KPTI 补丁后差距可达 ~18 倍。";
-            } else if (query.includes("KPTI") || query.includes("Spectre") || query.includes("Meltdown") || query.includes("安全补丁")) {
-                reply = "**KPTI（Kernel Page Table Isolation）** 是针对 x86 Meltdown 漏洞的安全补丁。\n\n它让用户态和内核态使用完全隔离的页表，每次系统调用都需要切换页表（更新 CR3），导致 TLB 失效，系统调用开销从 ~100ns 增加到 ~300-500ns。\n\n**ARM64 不需要 KPTI**——因为 ARM 有独立的 TTBR0（用户页表）和 TTBR1（内核页表），天然隔离。因此 ARM64 上系统调用开销相对稳定（~200-300ns），vDSO 加速比约 10x；而 x86 KPTI 后加速比可达 15-18x。";
-            } else if (query.includes("辅助向量") || query.includes("auxiliary") || query.includes("AT_SYSINFO") || query.includes("auxv")) {
-                reply = "**辅助向量（Auxiliary Vector）** 是内核在创建进程时传递给用户空间的一组键值对。\n\n其中 `AT_SYSINFO_EHDR` 包含 vDSO 的 ELF 头地址。动态链接器（ARM64: `ld-linux-aarch64.so`，x86: `ld-linux-x86-64.so`）在程序启动时读取这个值。\n\n可以用 `LD_SHOW_AUXV=1 /bin/true` 查看所有辅助向量。";
-            } else if (query.includes("vsyscall") || query.includes("固定地址")) {
-                reply = "**vsyscall** 是 vDSO 的前身（x86 专有，Linux 2.5 时代引入）。它在固定虚拟地址上映射系统调用快速版本。\n\n固定地址的安全隐患：攻击者可构造 ROP 攻击链。\n\nvDSO 的改进：ASLR 随机化、标准 ELF 格式、跨架构支持（ARM64、RISC-V 等都有 vDSO）。\n\n📌 ARM64 没有 vsyscall 的历史包袱，直接使用 vDSO。";
-            } else if (query.includes("strace") || query.includes("跟踪")) {
-                reply = "**strace** 通过 `ptrace` 拦截目标进程的 `svc #0`（ARM64）或 `syscall`（x86）指令。\n\n由于 vDSO 中的函数不使用这些指令（完全在用户态完成），**strace 无法看到 vDSO 拦截的调用**。\n\n1 亿次 `clock_gettime()` 调用，strace 一次都没抓到——说明走的是 vDSO 快车道。如果 strace 抓到了大量 `clock_gettime`，反而说明 vDSO 降级了（如时钟源被切为 jiffies）。";
-            } else if (query.includes("时钟源") || query.includes("clocksource") || query.includes("看门狗") || query.includes("watchdog") || query.includes("jiffies")) {
-                reply = "**时钟源看门狗（clocksource watchdog）** 是 Linux 内核的一个子系统，持续监控硬件时钟是否可靠。\n\n当它检测到时钟漂移（如 VM 热迁移后硬件时钟频率不同步），会将时钟源从高精度的 `arch_sys_counter`（ARM64）或 `tsc`（x86）降级为低精度但可靠的备选（如 `jiffies` 或 `hpet`）。\n\n降级后，内核将 vvar 页中的 `clock_mode` 设为 `VDSO_CLOCKMODE_NONE`，vDSO 代码检测到后主动 fallback 为真正的 `svc #0` 系统调用。\n\n排查命令：\n- `cat /sys/devices/system/clocksource/clocksource0/current_clocksource`\n- `dmesg | grep -i clocksource`";
-            } else if (query.includes("ELF") || query.includes("共享库") || query.includes("动态库") || query.includes("so")) {
-                reply = "**ELF（Executable and Linkable Format）** 是 Linux 上可执行文件和共享库的标准格式。\n\nvDSO 就是一个合法的 ELF 共享库（.so），不存在于磁盘上——完全由内核在内存中生成。\n\nARM64 上 `file` 显示为 `ELF 64-bit LSB shared object, ARM aarch64`，导出符号使用 `__kernel_` 前缀；x86 上则是 `ELF 64-bit LSB shared object, x86-64`，使用 `__vdso_` 前缀。";
-            } else if (query.includes("perf") || query.includes("性能")) {
-                reply = "**perf top** 是 Linux 内置的性能分析工具。\n\n在本案例中，`perf top` 显示 `__arm64_sys_clock_gettime` 占了 CPU 的 15%+，说明 `clock_gettime` 实际在走真正的系统调用路径（通过 `el0_svc_common` 入口），没有被 vDSO 拦截。\n\n正常情况下（vDSO 生效），perf top 中不应该出现内核态的 clock_gettime 函数。";
-            } else if (query.includes("mmap") || query.includes("映射") || query.includes("虚拟内存")) {
-                reply = "vDSO 本质上是一次特殊的 **mmap** 操作——内核在进程创建时自动将一小段代码和数据映射到用户空间。\n\n与普通 mmap 的区别：\n- 普通 mmap 映射磁盘文件，vDSO 映射内核生成的内存内容\n- vDSO 映射由内核自动完成，不需要用户调用 mmap()\n- vvar 页由内核通过定时器中断定期更新\n\n但底层机制相同：都是通过修改页表，将虚拟地址映射到特定的物理页面。";
-            } else if (query.includes("EL0") || query.includes("EL1") || query.includes("特权级") || query.includes("异常级别")) {
-                reply = "**ARM64 异常级别（Exception Levels）**：\n- **EL0**：用户态（应用程序运行的级别）\n- **EL1**：内核态（操作系统运行的级别）\n- **EL2**：虚拟化（Hypervisor）\n- **EL3**：安全固件（Secure Monitor）\n\n`svc #0` 指令将 CPU 从 EL0 提升到 EL1。vDSO 的核心价值就是**避免 EL0→EL1 切换**，让 `clock_gettime` 始终在 EL0 完成。\n\n📌 x86 上对应的是 Ring 0（内核）→ Ring 3（用户态），使用 `syscall`/`sysret` 指令切换。";
+        function getCurrentStepContext() {
+            if (typeof player !== 'undefined' && player.currentStep >= 0) {
+                const step = player.steps[player.currentStep];
+                return `步骤 ${player.currentStep + 1}: ${step.title}\n\n${step.commentary.replace(/<[^>]*>/g, '')}`;
             }
-            appendMessage('ai', reply);
+            return '';
         }
+
+        function handleChatKeyPress(e) { if (e.key === 'Enter') sendChatMessage() }
+
+        function sendChatMessage(textOverride) {
+            const input = document.getElementById('chatInput');
+            const text = textOverride || input.value.trim();
+            if (!text) return;
+            appendMessage('user', text);
+            chatHistory.push({ role: 'user', content: text });
+            if (!textOverride) input.value = '';
+            showTypingIndicator();
+            callCaseChat(text);
+        }
+
+        async function callCaseChat(query) {
+            const slug = (typeof CASE_SLUG !== 'undefined') ? CASE_SLUG : 'case-vdso';
+            const studentToken = localStorage.getItem('student_token');
+            const headers = { 'Content-Type': 'application/json' };
+            if (studentToken) headers['Authorization'] = `Bearer ${studentToken}`;
+
+            try {
+                const resp = await fetch(`/api/cases/${slug}/chat`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        message: query,
+                        context: getCurrentStepContext(),
+                        history: chatHistory.slice(-10)
+                    })
+                });
+                if (!resp.ok) throw new Error('API error');
+                const data = await resp.json();
+                const reply = data.reply || '抱歉，暂时无法回答，请稍后重试。';
+                chatHistory.push({ role: 'assistant', content: reply });
+                appendMessage('ai', reply);
+            } catch (e) {
+                appendMessage('ai', '网络错误，请检查连接后重试。');
+            }
+        }
+
+        function appendMessage(role, text) { const container = document.getElementById('chatMessages'); const typing = document.getElementById('typingIndicator'); if (typing) typing.remove(); const msgDiv = document.createElement('div'); msgDiv.className = `chat-msg ${role}`; if (role === 'ai' && typeof marked !== 'undefined') { msgDiv.innerHTML = `<div class="chat-bubble">${marked.parse(text)}</div>`; } else { msgDiv.innerHTML = `<div class="chat-bubble">${text.replace(/\n/g, '<br>')}</div>`; } container.appendChild(msgDiv); container.scrollTop = container.scrollHeight; return msgDiv }
+        function showTypingIndicator() { const container = document.getElementById('chatMessages'); const msgDiv = document.createElement('div'); msgDiv.className = 'chat-msg ai'; msgDiv.id = 'typingIndicator'; msgDiv.innerHTML = '<div class="chat-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>'; container.appendChild(msgDiv); container.scrollTop = container.scrollHeight }
 
         function setupChatLinks() { document.querySelectorAll('.chat-link:not([data-bound])').forEach(link => { link.dataset.bound = 'true'; link.addEventListener('click', (e) => { const keyword = e.target.innerText; sendChatMessage(`请详细解释一下：${keyword}`) }) }) }
 
