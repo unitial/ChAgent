@@ -834,95 +834,12 @@
       font-size: 10px;
     }
 
-    /* ===== Splash ===== */
-    .splash-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(13, 17, 23, 0.92);
-      backdrop-filter: blur(8px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
-      transition: opacity 0.5s;
-    }
-
-    .splash-overlay.hidden {
-      opacity: 0;
-      pointer-events: none;
-    }
-
-    .hardware-photo {
-      width: 100%;
-      border-radius: 8px;
-      margin-bottom: 16px;
-      border: 1px solid var(--border);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-    }
-
-    .splash-card {
-      text-align: center;
-      max-width: 530px;
-      padding: 30px;
-    }
-
-    .splash-card h1 {
-      font-size: 26px;
-      margin-bottom: 12px;
-      background: linear-gradient(135deg, var(--accent-green), var(--accent-blue));
-      background-clip: text;
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .splash-card p {
-      color: var(--text-secondary);
-      line-height: 1.6;
-      margin-bottom: 24px;
-      font-size: 15px;
-    }
-
-    .splash-start-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 14px 32px;
-      background: var(--accent-green);
-      color: #000;
-      border: none;
-      border-radius: 12px;
-      font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: transform 0.15s, box-shadow 0.2s;
-    }
-
-    .splash-start-btn:hover {
-      transform: scale(1.04);
-      box-shadow: 0 0 30px rgba(63, 185, 80, 0.3);
-    }
   </style>
 </head>
 
 <body>
 
-  <!-- Splash Screen (populated by PLAYER_CONFIG) -->
-  <div class="splash-overlay" id="splash">
-    <div class="splash-card">
-      <div id="splashImageContainer"></div>
-      <h1 id="splashTitle"></h1>
-      <p id="splashSubtitle"></p>
-      <button class="splash-start-btn" onclick="startPlayback()">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M8 5v14l11-7z" />
-        </svg>
-        开始观看
-      </button>
-    </div>
-  </div>
+
 
   <div class="app">
     <header class="header">
@@ -1305,7 +1222,7 @@
             await this.delay(400);
           }
           this.appendOutput(t.output);
-          await this.delay(2500);
+          await this.delay(30000);
         })();
       }
 
@@ -1364,25 +1281,14 @@
 
     const player = new TerminalPlayer(STEPS);
 
-    function startPlayback() {
-      const splash = document.getElementById('splash');
-      if (splash) splash.classList.add('hidden');
-      setTimeout(() => player.play(), 400);
-    }
-
     document.addEventListener('keydown', e => {
       // Don't hijack keys when the user is typing in an input/textarea
       const tag = document.activeElement && document.activeElement.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) return;
 
-      const splashHidden = document.getElementById('splash') && document.getElementById('splash').classList.contains('hidden');
-      if (splashHidden) {
-        if (e.code === 'Space') { e.preventDefault(); player.togglePlay(); }
-        if (e.code === 'ArrowLeft') { e.preventDefault(); player.prevStep(); }
-        if (e.code === 'ArrowRight') { e.preventDefault(); player.nextStep(); }
-      } else {
-        if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); startPlayback(); }
-      }
+      if (e.code === 'Space') { e.preventDefault(); player.togglePlay(); }
+      if (e.code === 'ArrowLeft') { e.preventDefault(); player.prevStep(); }
+      if (e.code === 'ArrowRight') { e.preventDefault(); player.nextStep(); }
     });
 
 
@@ -1394,16 +1300,9 @@
       }
       const cfg = PLAYER_CONFIG;
       document.title = cfg.title + ' — 交互式终端回放';
-      document.getElementById('splashTitle').textContent = cfg.title;
-      document.getElementById('splashSubtitle').innerHTML = cfg.subtitle;
       document.getElementById('headerTitle').textContent = cfg.title;
-      if (cfg.splashImage) {
-        const img = document.createElement('img');
-        img.src = cfg.splashImage;
-        img.className = 'hardware-photo';
-        img.alt = cfg.title;
-        document.getElementById('splashImageContainer').appendChild(img);
-      }
+      // Auto-start playback
+      setTimeout(() => player.play(), 300);
     })();
 
   </script>
