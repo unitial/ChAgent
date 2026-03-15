@@ -3,8 +3,11 @@
 import sys
 import os
 
-# Add backend directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
+BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+# Make relative SQLite paths resolve the same way as `cd backend && ...`
+os.chdir(BACKEND_DIR)
+sys.path.insert(0, BACKEND_DIR)
 
 from database import init_db, SessionLocal
 from models.teacher import Teacher
