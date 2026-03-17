@@ -14,6 +14,17 @@ def llm_chat(db: DBSession, system: str, messages: list[dict], document: dict | 
     return llm_chat_with_config(config, system, messages, document)
 
 
+def llm_chat_stream(db: DBSession, system: str, messages: list[dict], document: dict | None = None):
+    """Streaming variant. Yields str chunks then a final dict {input_tokens, output_tokens}."""
+    config = get_model_config(db)
+    provider = config["provider"]
+    model = config["model"]
+    if provider == "openrouter":
+        yield from _openrouter_chat_stream(config["openrouter_api_key"], model, system, messages, document)
+    else:
+        yield from _anthropic_chat_stream(_app_settings.anthropic_api_key, model, system, messages, document)
+
+
 def llm_chat_with_config(
     config: dict, system: str, messages: list[dict], document: dict | None = None
 ) -> tuple[str, int, int]:
@@ -92,3 +103,76 @@ def _openrouter_chat(api_key: str, model: str, system: str, messages: list[dict]
     input_tokens = usage.get("prompt_tokens", 0)
     output_tokens = usage.get("completion_tokens", 0)
     return text, input_tokens, output_tokens
+
+
+def _anthropic_chat_stream(api_key: str, model: str, system: str, messages: list[dict], document: dict | None = None):
+    client = anthropic.Anthropic(api_key=api_key)
+
+    if document:
+        api_messages = []
+        for i, msg in enumerate(messages):
+            if i == len(messages) - 1 and msg["role"] == "user":
+                api_messages.append({
+                    "role": "user",
+                    "content": [
+                        {"type": "document", "source": {"type": "base64", "media_type": document["media_type"], "data": document["data"]}},
+                        {"type": "text", "text": msg["content"]},
+                    ],
+                })
+            else:
+                api_messages.append(msg)
+    else:
+        api_messages = messages
+
+    with client.messages.stream(
+        model=model,
+        max_tokens=4096 if document else 2048,
+        system=system,
+        messages=api_messages,
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+        usage = stream.get_final_message().usage
+        yield {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens}
+
+
+def _openrouter_chat_stream(api_key: str, model: str, system: str, messages: list[dict], document: dict | None = None):
+    import json
+    if document and document.get("media_type") == "text/plain":
+        import base64
+        doc_text = base64.b64decode(document["data"]).decode("utf-8")
+        messages = list(messages)
+        last = messages[-1]
+        messages[-1] = {**last, "content": f"[文档内容]\n{doc_text}\n\n[问题]\n{last['content']}"}
+
+    openai_messages = [{"role": "system", "content": system}] + messages
+    input_tokens = 0
+    output_tokens = 0
+
+    with httpx.stream(
+        "POST",
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"model": model, "max_tokens": 4096 if document else 2048, "messages": openai_messages, "stream": True},
+        timeout=60,
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload.strip() == "[DONE]":
+                break
+            try:
+                data = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            delta = data["choices"][0].get("delta", {})
+            if "content" in delta and delta["content"]:
+                yield delta["content"]
+            usage = data.get("usage")
+            if usage:
+                input_tokens = usage.get("prompt_tokens", 0)
+                output_tokens = usage.get("completion_tokens", 0)
+
+    yield {"input_tokens": input_tokens, "output_tokens": output_tokens}
