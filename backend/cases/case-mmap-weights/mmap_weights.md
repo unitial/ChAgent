@@ -147,7 +147,7 @@ Peak RSS: 2 GB                       # <-- 初始只占 2GB
 王姐点头："问得好。对 dense 模型，mmap 确实不会减少总 I/O 量。它的**真正价值**是："
 
 ```
-mmap 对 dense 模型的三大优势（与拐载无关）：
+mmap 对 dense 模型的三大优势：
 
 ① 零拷贝：不需要 Page Cache + malloc Buffer 两份内存
   read():  内存占用 = Page Cache(~140GB) + 用户 Buffer(141GB)

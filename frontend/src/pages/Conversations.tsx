@@ -86,6 +86,7 @@ export default function Conversations() {
   const [loading, setLoading] = useState(false)
   const [studentsLoading, setStudentsLoading] = useState(true)
   const [dateRange, setDateRange] = useState<[string, string] | null>(null)
+  const [modeFilter, setModeFilter] = useState<'all' | 'normal' | 'onboarding' | 'challenge'>('all')
   const [viewingPrompt, setViewingPrompt] = useState<string | null>(null)
   const chatBodyRef = useRef<HTMLDivElement>(null)
 
@@ -100,21 +101,22 @@ export default function Conversations() {
 
   useEffect(() => {
     if (selectedId == null) return
-    fetchConversations(selectedId, dateRange)
-  }, [selectedId, dateRange])
+    fetchConversations(selectedId, dateRange, modeFilter)
+  }, [selectedId, dateRange, modeFilter])
 
   useEffect(() => {
     const el = chatBodyRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [conversations])
 
-  const fetchConversations = async (sid: number, range: [string, string] | null) => {
+  const fetchConversations = async (sid: number, range: [string, string] | null, mode: string) => {
     setLoading(true)
     try {
       const res = await getConversations({
         student_id: sid,
         date_from: range?.[0],
         date_to: range?.[1],
+        mode: mode === 'all' ? undefined : mode,
       })
       setConversations(res.data)
     } finally {
@@ -178,6 +180,20 @@ export default function Conversations() {
           <Typography.Text strong style={{ fontSize: 15 }}>
             {selectedStudent ? `${selectedStudent.name} 的对话记录` : '对话记录'}
           </Typography.Text>
+          <div style={styles.modeTabs}>
+            {([['all', '全部'], ['normal', '💬 普通'], ['onboarding', '🎯 初心'], ['challenge', '⚔️ 挑战']] as const).map(([key, label]) => (
+              <button
+                key={key}
+                style={{
+                  ...styles.modeTab,
+                  ...(modeFilter === key ? styles.modeTabActive : {}),
+                }}
+                onClick={() => setModeFilter(key as typeof modeFilter)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <DatePicker.RangePicker
             size="small"
             onChange={(_, strs) => setDateRange(strs[0] ? [strs[0], strs[1]] : null)}
@@ -199,6 +215,8 @@ export default function Conversations() {
                 <div style={styles.sessionDivider}>
                   <span style={styles.sessionLabel}>
                     Session #{sg.sessionId} · {dayjs(sg.messages[0].created_at).format('YYYY-MM-DD HH:mm')}
+                    {sg.messages[0].session_mode === 'onboarding' && <span style={styles.modeBadgeOnboarding}>🎯 初心</span>}
+                    {sg.messages[0].session_mode === 'challenge' && <span style={styles.modeBadgeChallenge}>⚔️ 挑战</span>}
                   </span>
                 </div>
                 {/* Messages */}
@@ -336,6 +354,48 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 12,
     background: '#fafafa',
+    flexWrap: 'wrap',
+  },
+  modeTabs: {
+    display: 'flex',
+    gap: 4,
+    marginLeft: 12,
+  },
+  modeTab: {
+    background: 'none',
+    border: '1px solid #d9d9d9',
+    borderRadius: 6,
+    padding: '3px 10px',
+    cursor: 'pointer',
+    fontSize: 12,
+    color: '#666',
+    fontWeight: 500,
+    transition: 'all 0.15s',
+  },
+  modeTabActive: {
+    background: '#1677ff',
+    color: '#fff',
+    borderColor: '#1677ff',
+  },
+  modeBadgeOnboarding: {
+    marginLeft: 6,
+    background: '#fff7e6',
+    color: '#d46b08',
+    border: '1px solid #ffd591',
+    borderRadius: 4,
+    padding: '0 5px',
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  modeBadgeChallenge: {
+    marginLeft: 6,
+    background: '#fff1f0',
+    color: '#cf1322',
+    border: '1px solid #ffa39e',
+    borderRadius: 4,
+    padding: '0 5px',
+    fontSize: 11,
+    fontWeight: 600,
   },
   chatBody: {
     flex: 1,

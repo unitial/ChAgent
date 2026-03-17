@@ -178,7 +178,7 @@ def get_enabled_skills_prompt(messages: list[dict] | None = None) -> str:
       the recent conversation (messages). If messages is empty or None,
       no knowledge_point skills are injected (avoids cold-start noise).
     """
-    all_skills = [s for s in list_skills() if s["enabled"] and s["type"] not in ("profile_update", "challenge")]
+    all_skills = [s for s in list_skills() if s["enabled"] and s["type"] not in ("profile_update", "challenge", "onboarding")]
 
     always = [s for s in all_skills if s["type"] in ("global", "teaching_strategy")]
 
