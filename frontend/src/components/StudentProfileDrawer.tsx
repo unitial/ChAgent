@@ -238,13 +238,22 @@ export default function StudentProfileDrawer({ student, conversations, open, onC
     sessionMap.get(c.session_id)!.push(c)
   }
 
+  const getSessionBadge = (mode: string | null | undefined) => {
+    if (mode === 'onboarding') return <Tag color="green">🎯 初心</Tag>
+    if (mode === 'challenge') return <Tag color="orange">⚔️ 挑战</Tag>
+    return null
+  }
+
   const convTab = (
     <div style={{ maxHeight: 500, overflowY: 'auto' }}>
       {Array.from(sessionMap.entries()).map(([sessionId, msgs]) => (
         <div key={sessionId} style={{ marginBottom: 16 }}>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Session #{sessionId}
-          </Typography.Text>
+          <Space size={8}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Session #{sessionId}
+            </Typography.Text>
+            {getSessionBadge(msgs[0]?.session_mode)}
+          </Space>
           {msgs.map((msg) => (
             <div
               key={msg.id}

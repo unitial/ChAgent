@@ -721,16 +721,51 @@ def onboarding_start(
     # Get student profile context (may include previous learning-motivation aspect)
     profile_context = get_profile_context_for_prompt(student.id)
 
+    # Gather previous onboarding conversation history
+    prev_onboarding_convs = (
+        db.query(Conversation)
+        .join(ConvSession, Conversation.session_id == ConvSession.id)
+        .filter(
+            ConvSession.student_id == student.id,
+            ConvSession.mode == "onboarding",
+            ConvSession.id != session.id,  # exclude current new session
+        )
+        .order_by(Conversation.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    if prev_onboarding_convs:
+        prev_msgs = "\n".join(
+            f"[{c.role}]: {c.content[:300]}" for c in reversed(prev_onboarding_convs)
+        )
+    else:
+        prev_msgs = ""
+
     profile_line = ('- 已有画像：\n' + profile_context) if profile_context else '- 暂无画像数据（新学生）'
-    kickoff = f"""（系统提示：学习初心对话已启动。
+
+    if prev_msgs:
+        kickoff = f"""（系统提示：学习初心对话已启动。
 
 **学生信息**：
 - 姓名：{student.name}
 {profile_line}
 
-请用中文向学生打招呼，自我介绍你是课程AI助教，简要说明你想花几分钟和他/她聊聊学习操作系统这门课的想法和期望。然后从一个轻松的问题开始，比如了解学生的背景或为什么选了这门课。
+**之前的初心对话记录**：
+{prev_msgs}
 
-**注意**：这是"学习初心"对话的第一轮，请保持轻松友好，不要一上来就列出很多问题。）"""
+请用中文向学生打招呼。这不是第一次初心对话了，请结合上面之前的初心聊天记录，继续深入了解学生的**学习动机**和对操作系统课程的**期望**。你可以从之前的回答中找到值得深入的点追问下去，了解他/她的期望或目标是否有变化，或从新的角度切入挖掘更深层的想法。不要重复之前已经聊过的内容。
+
+**注意**：请保持轻松友好，不要一上来就列出很多问题。提出一个有针对性的问题即可。）"""
+    else:
+        kickoff = f"""（系统提示：学习初心对话已启动。
+
+**学生信息**：
+- 姓名：{student.name}
+{profile_line}
+
+这是学生第一次初心对话。请用中文向学生打招呼，自我介绍你是课程AI助教，简要说明你想花几分钟了解一下他/她学习这门课的想法。然后从一个轻松的开放性问题开始，比如了解学生的背景或为什么选了这门课。最终目标是了解学生**期望从操作系统这门课中获得什么**。
+
+**注意**：请保持轻松友好，不要一上来就列出很多问题，每次只问一个。）"""
 
     reply, input_tokens, output_tokens, system_prompt, _citations = agent_service.chat(db, student, session, kickoff)
     db.add(Conversation(
@@ -746,6 +781,7 @@ def onboarding_start(
         "mode": session.mode,
         "started_at": session.started_at.isoformat(),
     }
+
 
 
 @router.get("/onboarding/active", response_model=Optional[ChallengeSessionOut])

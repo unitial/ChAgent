@@ -39,6 +39,7 @@ class ConversationOut(BaseModel):
     role: str
     content: str
     session_id: int
+    session_mode: Optional[str] = None
     system_prompt: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -126,7 +127,8 @@ def get_student_conversations(
         raise HTTPException(status_code=404, detail="Student not found")
 
     convs = (
-        db.query(Conversation)
+        db.query(Conversation, ConvSession.mode.label("session_mode"))
+        .join(ConvSession, Conversation.session_id == ConvSession.id)
         .filter(Conversation.student_id == student_id)
         .order_by(Conversation.created_at)
         .all()
@@ -137,10 +139,11 @@ def get_student_conversations(
             role=c.role,
             content=c.content,
             session_id=c.session_id,
+            session_mode=session_mode,
             system_prompt=c.system_prompt,
             created_at=c.created_at.isoformat() if c.created_at else None,
         )
-        for c in convs
+        for c, session_mode in convs
     ]
 
 

@@ -77,13 +77,14 @@ const PLAYER_CONFIG = {
 
 ```javascript
 {
-  title: "🔍 步骤标题（带 emoji）",
+  title: "🔍 简短标题（带 emoji，不带步骤编号）",
   terminal: {
     prompt: "$ ",            // 提示符。GDB: "(gdb) "。纯输出: ""
     command: "ls -la",       // 用户命令。多行用 \\n
     output: "line1\\nline2"  // 命令输出。★ 换行必须用 \\n
   },
-  // 纯讲解步骤: terminal: null
+  // 纯讲解步骤: terminal: null，同时用 infoPanel 填充左侧
+  infoPanel: `<h3>📌 标题</h3><p>左侧信息面板内容（HTML）</p>`,  // 可选
   commentary: `<p>HTML 解说</p>`  // JS 模板字符串
 }
 ```
@@ -92,6 +93,21 @@ const PLAYER_CONFIG = {
 - `output` 中的换行**必须用 `\\n`**（字面反斜杠 n），不能用真换行
 - `command` 也用 `\\n` 分隔多条命令
 - 纯讲解步骤设 `terminal: null`
+- ⚠️ **尽量避免 `terminal: null`**。如果没有命令行输出，可以用 `prompt: "", command: ""` + `output` 展示关键数据、对比表格、流程图或摘要信息（参考 `case-unified-memory` 的实现）
+- 当确实设为 `terminal: null` 时，**必须同时提供 `infoPanel`**（HTML 字符串），在左侧面板展示关键信息摘要、知识点列表、对比表等有价值的内容，避免左侧空白只显示"阅读右侧思考过程"
+
+#### infoPanel 规则（可选字段，仅在 terminal: null 时生效）
+- 内容为 HTML 字符串，渲染在左侧面板中
+- 适合放：关键术语清单、知识点要点、对比表、架构示意图（ASCII art）、步骤流程等
+- 不要简单复制右侧 commentary 的内容，而是提供**补充或结构化信息**
+
+#### title 规则
+- ⚠️ **不要在 title 中包含「步骤 N」或任何编号**。模板会自动在标题上方显示「步骤 N / 总数」徽章，title 里再写编号会导致编号重复且不一致
+- title 以 emoji 开头，后跟简短描述，例如：`"🔍 定位真凶：设备树不匹配"`
+- ⚠️ **最后一个 STEP 的 title 不要统一叫「战后总结」**。根据案例类型选择合适的名称：
+  - 排障/取证类案例 → `"💡 核心回顾"`
+  - 技术说明/对比类案例 → `"💡 总结与启示"`
+  - 也可以用其他合适的措辞，关键是**与案例的叙事基调匹配**
 
 #### commentary HTML 可用 class
 
@@ -115,6 +131,9 @@ const PLAYER_CONFIG = {
 
 - [ ] STEPS 数量在 8-12 之间
 - [ ] 每个 title 有 emoji 前缀
+- [ ] title 中**没有**「步骤 N」编号（模板自动生成步骤徽章）
+- [ ] 最后一步 title **不是**「战后总结」，而是与案例基调匹配的名称
+- [ ] `terminal: null` 的步骤**都有** `infoPanel` 内容（尽量少用 `terminal: null`）
 - [ ] `terminal.output` 换行是 `\\n`
 - [ ] 关键术语用 `<span class="chat-link">` 包裹
 - [ ] 模板字符串中无未转义的反引号

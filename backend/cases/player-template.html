@@ -1172,7 +1172,11 @@
       renderTerminal(step, animated) {
         this.termEl.innerHTML = '';
         if (!step.terminal) {
-          this.termEl.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-family:Inter,sans-serif;font-size:14px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">💬</div>阅读右侧思考过程</div></div>`;
+          if (step.infoPanel) {
+            this.termEl.innerHTML = `<div style="padding:20px 24px;font-family:Inter,sans-serif;font-size:13.5px;line-height:1.8;color:var(--text-secondary);overflow-y:auto;height:100%">${step.infoPanel}</div>`;
+          } else {
+            this.termEl.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-dim);font-family:Inter,sans-serif;font-size:14px;text-align:center"><div><div style="font-size:48px;margin-bottom:12px">💬</div>阅读右侧思考过程</div></div>`;
+          }
           return Promise.resolve();
         }
 

@@ -33,6 +33,7 @@ export interface Conversation {
   student_id: number
   student_name: string
   session_id: number
+  session_mode?: string | null
   role: 'user' | 'assistant'
   content: string
   system_prompt?: string
@@ -147,7 +148,7 @@ export const getDashboardStats = () => api.get<DashboardStats>('/dashboard/stats
 export const getHotTopics = () => api.get<HotTopic[]>('/dashboard/hot-topics')
 
 // Conversations
-export const getConversations = (params?: { student_id?: number; date_from?: string; date_to?: string }) =>
+export const getConversations = (params?: { student_id?: number; date_from?: string; date_to?: string; mode?: string }) =>
   api.get<Conversation[]>('/conversations', { params })
 
 // Teacher chat
